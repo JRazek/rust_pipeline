@@ -1,3 +1,4 @@
+use std::{marker::PhantomData, os::unix::process::CommandExt};
 use tokio::task::JoinHandle;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -62,7 +63,7 @@ pub trait Link<
     ConsumedType: ChannelType,
     ProducedType: ChannelType,
     WorkerReturnType: Send + 'static,
->: AsyncLinkWorker<ConsumedType, ProducedType, WorkerReturnType> + 'static
+>: Send + AsyncLinkWorker<ConsumedType, ProducedType, WorkerReturnType> + 'static
 {
     async fn start(
         self,
@@ -86,6 +87,64 @@ pub trait Link<
     }
 }
 
+pub struct LinkWrapper<
+    InputType: ChannelType,
+    OutputType: ChannelType,
+    CommunicationType: ChannelType,
+    Link1: Link<InputType, CommunicationType, ()>,
+    Link2: Link<CommunicationType, OutputType, ()>,
+> {
+    _phantom: PhantomData<InputType>,
+    _phantom2: PhantomData<OutputType>,
+    _phantom3: PhantomData<CommunicationType>,
+
+    link1: Link1,
+    link2: Link2,
+}
+
+#[async_trait::async_trait]
+impl<
+        InputType: ChannelType,
+        OutputType: ChannelType,
+        CommunicationType: ChannelType,
+        Link1: Link<InputType, CommunicationType, ()>,
+        Link2: Link<CommunicationType, OutputType, ()>,
+    > AsyncLinkWorker<InputType, OutputType, ()>
+    for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
+{
+    async fn run(self, rx: Receiver<InputType>, tx: Sender<OutputType>) -> Result<()> {
+        let (link1_join_handle, link1_tx, link1_rx) = self.link1.start(10).await;
+        let (link2_join_handle, link2_tx, link2_rx) = self.link2.start(10).await;
+
+        let link_in = link_channels(rx, link1_tx);
+        let link_out = link_channels(link2_rx, tx);
+
+        let link_internal = link_channels(link1_rx, link2_tx);
+
+        let _ = tokio::join!(
+            link1_join_handle,
+            link2_join_handle,
+            link_in,
+            link_out,
+            link_internal
+        );
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<
+        InputType: ChannelType,
+        OutputType: ChannelType,
+        CommunicationType: ChannelType,
+        Link1: Link<InputType, CommunicationType, ()>,
+        Link2: Link<CommunicationType, OutputType, ()>,
+    > Link<InputType, OutputType, ()>
+    for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
+{
+}
+
 pub fn link_channels<T: ChannelType>(rx: Receiver<T>, tx: Sender<T>) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         while let Some(i) = rx.recv().await {
@@ -99,11 +158,26 @@ pub fn link_channels<T: ChannelType>(rx: Receiver<T>, tx: Sender<T>) -> JoinHand
 #[macro_export]
 macro_rules! start_and_link_all {
     ($stream:expr, $link:expr, $sink:expr) => {{
-        use super::Stream;
-        let mut stream = $stream;
+        let stream = $stream;
         let link = $link;
-        stream.link_and_spawn_worker(link);
+        let sink = $sink;
+
+        let (stream_join_handle, stream_rx) = stream.start(10).await;
+        let (link_join_handle, link_tx, link_rx) = link.start(10).await;
+        let (sink_join_handle, sink_tx) = sink.start(10).await;
+
+        let link1 = link_channels(stream_rx, link_tx);
+        let link2 = link_channels(link_rx, sink_tx);
+
+        let _ = tokio::join!(
+            stream_join_handle,
+            link_join_handle,
+            sink_join_handle,
+            link1,
+            link2
+        );
     }};
+
     ($stream:expr, $($link:expr),+, $sink:expr) => {{
         let mut stream = $stream;
 
@@ -183,5 +257,14 @@ mod tests {
             link1,
             link2
         );
+    }
+
+    #[tokio::test]
+    async fn test_macro() {
+        let stream = SimpleStream {};
+        let link = SimpleLink {};
+        let sink = SimpleSink {};
+
+        let res = start_and_link_all!(stream, link, sink);
     }
 }
