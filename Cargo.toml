@@ -1,0 +1,13 @@
+[package]
+
+name = "main"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.71"
+thingbuf = { version = "0.1.4", features = ["std", "alloc"] }
+tokio = { version = "1.28.1", features = ["full"] }
+tokio-tungstenite = "0.18.0"
+tokio-native-tls = "0.3.1"
+
