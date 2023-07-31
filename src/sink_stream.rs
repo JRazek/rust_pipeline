@@ -99,7 +99,10 @@ pub struct LinkWrapper<
     _phantom3: PhantomData<CommunicationType>,
 
     link1: Link1,
+    link1_queue_size: usize,
+
     link2: Link2,
+    link2_queue_size: usize,
 }
 
 impl<
@@ -111,13 +114,20 @@ impl<
     > LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     #[allow(dead_code)]
-    pub fn new(link1: Link1, link2: Link2) -> Self {
+    pub fn new(
+        link1: Link1,
+        link1_queue_size: usize,
+        link2: Link2,
+        link2_queue_size: usize,
+    ) -> Self {
         Self {
             _phantom: PhantomData,
             _phantom2: PhantomData,
             _phantom3: PhantomData,
             link1,
+            link1_queue_size,
             link2,
+            link2_queue_size,
         }
     }
 }
@@ -133,8 +143,8 @@ impl<
     for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     async fn run(self, rx: Receiver<InputType>, tx: Sender<OutputType>) -> Result<()> {
-        let (link1_join_handle, link1_tx, link1_rx) = self.link1.start(10).await;
-        let (link2_join_handle, link2_tx, link2_rx) = self.link2.start(10).await;
+        let (link1_join_handle, link1_tx, link1_rx) = self.link1.start(100).await;
+        let (link2_join_handle, link2_tx, link2_rx) = self.link2.start(100).await;
 
         let link_in = link_channels(rx, link1_tx);
         let link_out = link_channels(link2_rx, tx);
@@ -182,7 +192,8 @@ macro_rules! eval_links {
     };
 
     ($link:expr, $($links:expr),+) => {
-        LinkWrapper::new($link, eval_links!($($links),*))
+        //TODO better way to get queue sizes!
+        LinkWrapper::new($link, 100, eval_links!($($links),*), 100)
     };
 }
 
@@ -193,9 +204,9 @@ macro_rules! start_and_link_all {
         let link = eval_links!($($link),+);
         let sink = $sink;
 
-        let (stream_join_handle, stream_rx) = stream.start(10).await;
-        let (link_join_handle, link_tx, link_rx) = link.start(10).await;
-        let (sink_join_handle, sink_tx) = sink.start(10).await;
+        let (stream_join_handle, stream_rx) = stream.start(100).await;
+        let (link_join_handle, link_tx, link_rx) = link.start(100).await;
+        let (sink_join_handle, sink_tx) = sink.start(100).await;
 
         let link1 = link_channels(stream_rx, link_tx);
         let link2 = link_channels(link_rx, sink_tx);
