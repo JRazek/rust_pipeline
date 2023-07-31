@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, os::unix::process::CommandExt};
+use std::marker::PhantomData;
 use tokio::task::JoinHandle;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -102,6 +102,26 @@ pub struct LinkWrapper<
     link2: Link2,
 }
 
+impl<
+        InputType: ChannelType,
+        OutputType: ChannelType,
+        CommunicationType: ChannelType,
+        Link1: Link<InputType, CommunicationType, ()>,
+        Link2: Link<CommunicationType, OutputType, ()>,
+    > LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
+{
+    #[allow(dead_code)]
+    pub fn new(link1: Link1, link2: Link2) -> Self {
+        Self {
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
+            _phantom3: PhantomData,
+            link1,
+            link2,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl<
         InputType: ChannelType,
@@ -156,10 +176,21 @@ pub fn link_channels<T: ChannelType>(rx: Receiver<T>, tx: Sender<T>) -> JoinHand
 }
 
 #[macro_export]
+macro_rules! eval_links {
+    ($link:expr) => {
+        $link
+    };
+
+    ($link:expr, $($links:expr),+) => {
+        LinkWrapper::new($link, eval_links!($($links),*))
+    };
+}
+
+#[macro_export]
 macro_rules! start_and_link_all {
-    ($stream:expr, $link:expr, $sink:expr) => {{
+    ($stream:expr, $($link:expr);+, $sink:expr) => {{
         let stream = $stream;
-        let link = $link;
+        let link = eval_links!($($link),+);
         let sink = $sink;
 
         let (stream_join_handle, stream_rx) = stream.start(10).await;
@@ -176,12 +207,6 @@ macro_rules! start_and_link_all {
             link1,
             link2
         );
-    }};
-
-    ($stream:expr, $($link:expr),+, $sink:expr) => {{
-        let mut stream = $stream;
-
-        let mut sink = $sink;
     }};
 }
 
@@ -205,13 +230,13 @@ mod tests {
     #[async_trait::async_trait]
     impl Stream<u32, ()> for SimpleStream {}
 
-    struct SimpleLink {}
+    struct X3 {}
 
     #[async_trait::async_trait]
-    impl AsyncLinkWorker<u32, bool, ()> for SimpleLink {
-        async fn run(self, rx: Receiver<u32>, tx: Sender<bool>) -> Result<()> {
+    impl AsyncLinkWorker<u32, u32, ()> for X3 {
+        async fn run(self, rx: Receiver<u32>, tx: Sender<u32>) -> Result<()> {
             while let Some(i) = rx.recv().await {
-                tx.send((i % 2) == 0).await?;
+                tx.send(i * 3).await?;
             }
 
             Ok(())
@@ -219,15 +244,50 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Link<u32, bool, ()> for SimpleLink {}
+    impl Link<u32, u32, ()> for X3 {}
+
+    struct X10 {}
+
+    #[async_trait::async_trait]
+    impl AsyncLinkWorker<u32, u32, ()> for X10 {
+        async fn run(self, rx: Receiver<u32>, tx: Sender<u32>) -> Result<()> {
+            while let Some(i) = rx.recv().await {
+                tx.send(i * 10).await?;
+            }
+
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Link<u32, u32, ()> for X10 {}
+
+    struct Div2 {}
+
+    #[async_trait::async_trait]
+    impl AsyncLinkWorker<u32, u32, ()> for Div2 {
+        async fn run(self, rx: Receiver<u32>, tx: Sender<u32>) -> Result<()> {
+            while let Some(i) = rx.recv().await {
+                tx.send(i / 2).await?;
+            }
+
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Link<u32, u32, ()> for Div2 {}
 
     struct SimpleSink {}
 
     #[async_trait::async_trait]
-    impl AsyncSinkWorker<bool, ()> for SimpleSink {
-        async fn run(self, rx: Receiver<bool>) -> Result<()> {
+    impl AsyncSinkWorker<u32, ()> for SimpleSink {
+        async fn run(self, rx: Receiver<u32>) -> Result<()> {
+            let mut n = 0;
+
             while let Some(i) = rx.recv().await {
-                println!("Sink received: {}", i);
+                assert_eq!(i, n * 15);
+                n += 1;
             }
 
             Ok(())
@@ -235,36 +295,19 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Sink<bool, ()> for SimpleSink {}
-
-    #[tokio::test]
-    async fn test_simple() {
-        let stream = SimpleStream {};
-        let link = SimpleLink {};
-        let sink = SimpleSink {};
-
-        let (stream_join_handle, stream_rx) = stream.start(10).await;
-        let (link_join_handle, link_tx, link_rx) = link.start(10).await;
-        let (sink_join_handle, sink_tx) = sink.start(10).await;
-
-        let link1 = link_channels(stream_rx, link_tx);
-        let link2 = link_channels(link_rx, sink_tx);
-
-        let _ = tokio::join!(
-            stream_join_handle,
-            link_join_handle,
-            sink_join_handle,
-            link1,
-            link2
-        );
-    }
+    impl Sink<u32, ()> for SimpleSink {}
 
     #[tokio::test]
     async fn test_macro() {
         let stream = SimpleStream {};
-        let link = SimpleLink {};
+        let x3 = X3 {};
+        let x10 = X10 {};
+        let div2 = Div2 {};
+
+        let link = eval_links!(x3, x10, div2);
+
         let sink = SimpleSink {};
 
-        let res = start_and_link_all!(stream, link, sink);
+        start_and_link_all!(stream, link, sink);
     }
 }
