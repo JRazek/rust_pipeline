@@ -15,15 +15,15 @@ pub trait AsyncSinkWorker<T: ChannelType, ReturnType> {
 }
 
 #[async_trait::async_trait]
-pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static>:
+pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
     AsyncSinkWorker<T, WorkerReturnType> + Send + Sync + 'static
 {
-    async fn start(self, channel_size: usize) -> (JoinHandle<Result<WorkerReturnType>>, Sender<T>)
+    async fn start(self) -> (JoinHandle<Result<WorkerReturnType>>, Sender<T>)
     where
         Self: Sized,
         T: ChannelType,
     {
-        let (tx, rx) = thingbuf::mpsc::channel::<T>(channel_size);
+        let (tx, rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
 
         let join_handle = tokio::spawn(self.run(rx));
 
@@ -37,15 +37,15 @@ pub trait AsyncStreamWorker<T: ChannelType, ReturnType> {
 }
 
 #[async_trait::async_trait]
-pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static>:
+pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
     AsyncStreamWorker<T, WorkerReturnType> + Send + Sync + 'static
 {
-    async fn start(self, channel_size: usize) -> (JoinHandle<Result<WorkerReturnType>>, Receiver<T>)
+    async fn start(self) -> (JoinHandle<Result<WorkerReturnType>>, Receiver<T>)
     where
         Self: Sized,
         T: ChannelType,
     {
-        let (tx, rx) = thingbuf::mpsc::channel::<T>(channel_size);
+        let (tx, rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
 
         let join_handle = tokio::spawn(self.run(tx));
 
@@ -63,11 +63,12 @@ pub trait Link<
     ConsumedType: ChannelType,
     ProducedType: ChannelType,
     WorkerReturnType: Send + 'static,
+    const SINK_CHANNEL_SIZE: usize = 100,
+    const STREAM_CHANNEL_SIZE: usize = 100,
 >: Send + AsyncLinkWorker<ConsumedType, ProducedType, WorkerReturnType> + 'static
 {
     async fn start(
         self,
-        channel_size: usize,
     ) -> (
         JoinHandle<Result<WorkerReturnType>>,
         Sender<ConsumedType>,
@@ -78,8 +79,8 @@ pub trait Link<
         ConsumedType: ChannelType,
         ProducedType: ChannelType,
     {
-        let (inner_tx, inner_rx) = thingbuf::mpsc::channel::<ConsumedType>(channel_size);
-        let (outer_tx, outer_rx) = thingbuf::mpsc::channel::<ProducedType>(channel_size);
+        let (inner_tx, inner_rx) = thingbuf::mpsc::channel::<ConsumedType>(SINK_CHANNEL_SIZE);
+        let (outer_tx, outer_rx) = thingbuf::mpsc::channel::<ProducedType>(STREAM_CHANNEL_SIZE);
 
         let join_handle = tokio::spawn(self.run(inner_rx, outer_tx));
 
@@ -91,18 +92,20 @@ pub struct LinkWrapper<
     InputType: ChannelType,
     OutputType: ChannelType,
     CommunicationType: ChannelType,
-    Link1: Link<InputType, CommunicationType, ()>,
-    Link2: Link<CommunicationType, OutputType, ()>,
+    Link1: Link<InputType, CommunicationType, (), L1_SINK_CHANNEL_SIZE, L1_STREAM_CHANNEL_SIZE>,
+    Link2: Link<CommunicationType, OutputType, (), L2_SINK_CHANNEL_SIZE, L2_STREAM_CHANNEL_SIZE>,
+    const L1_SINK_CHANNEL_SIZE: usize = 100,
+    const L1_STREAM_CHANNEL_SIZE: usize = 100,
+    const L2_SINK_CHANNEL_SIZE: usize = 100,
+    const L2_STREAM_CHANNEL_SIZE: usize = 100,
 > {
     _phantom: PhantomData<InputType>,
     _phantom2: PhantomData<OutputType>,
     _phantom3: PhantomData<CommunicationType>,
 
     link1: Link1,
-    link1_queue_size: usize,
 
     link2: Link2,
-    link2_queue_size: usize,
 }
 
 impl<
@@ -114,20 +117,13 @@ impl<
     > LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     #[allow(dead_code)]
-    pub fn new(
-        link1: Link1,
-        link1_queue_size: usize,
-        link2: Link2,
-        link2_queue_size: usize,
-    ) -> Self {
+    pub fn new(link1: Link1, link2: Link2) -> Self {
         Self {
             _phantom: PhantomData,
             _phantom2: PhantomData,
             _phantom3: PhantomData,
             link1,
-            link1_queue_size,
             link2,
-            link2_queue_size,
         }
     }
 }
@@ -143,8 +139,8 @@ impl<
     for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     async fn run(self, rx: Receiver<InputType>, tx: Sender<OutputType>) -> Result<()> {
-        let (link1_join_handle, link1_tx, link1_rx) = self.link1.start(100).await;
-        let (link2_join_handle, link2_tx, link2_rx) = self.link2.start(100).await;
+        let (link1_join_handle, link1_tx, link1_rx) = self.link1.start().await;
+        let (link2_join_handle, link2_tx, link2_rx) = self.link2.start().await;
 
         let link_in = link_channels(rx, link1_tx);
         let link_out = link_channels(link2_rx, tx);
@@ -193,7 +189,7 @@ macro_rules! eval_links {
 
     ($link:expr, $($links:expr),+) => {
         //TODO better way to get queue sizes!
-        LinkWrapper::new($link, 100, eval_links!($($links),*), 100)
+        LinkWrapper::new($link, eval_links!($($links),*))
     };
 }
 
@@ -204,9 +200,9 @@ macro_rules! start_and_link_all {
         let link = eval_links!($($link),+);
         let sink = $sink;
 
-        let (stream_join_handle, stream_rx) = stream.start(100).await;
-        let (link_join_handle, link_tx, link_rx) = link.start(100).await;
-        let (sink_join_handle, sink_tx) = sink.start(100).await;
+        let (stream_join_handle, stream_rx) = stream.start().await;
+        let (link_join_handle, link_tx, link_rx) = link.start().await;
+        let (sink_join_handle, sink_tx) = sink.start().await;
 
         let link1 = link_channels(stream_rx, link_tx);
         let link2 = link_channels(link_rx, sink_tx);
