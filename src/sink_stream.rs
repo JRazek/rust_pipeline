@@ -10,9 +10,9 @@ use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};
 impl<T: Send + Sync + Clone + Default + 'static> ChannelType for T {}
 
 #[async_trait::async_trait]
-pub trait AsyncSinkWorker<T: ChannelType, ReturnType> {
+pub trait AsyncSinkWorker<T: ChannelType, ReturnType, UserData> {
     async fn run(
-        self,
+        user_data: UserData,
         rx: ThingbufReceiver<T>,
         oneshot: oneshot::Receiver<()>,
     ) -> Result<ReturnType>;
@@ -20,8 +20,10 @@ pub trait AsyncSinkWorker<T: ChannelType, ReturnType> {
 
 #[async_trait::async_trait]
 pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
-    AsyncSinkWorker<T, WorkerReturnType> + Send + Sync + 'static
+    Sized
 {
+    type AsyncSinkWorkerType: AsyncSinkWorker<T, WorkerReturnType, Self> + Send + Sync + 'static;
+
     async fn start(
         self,
     ) -> (
@@ -36,21 +38,31 @@ pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_S
         let (thingbuf_tx, thingbuf_rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<()>();
 
-        let join_handle = tokio::spawn(self.run(thingbuf_rx, oneshot_rx));
+        let join_handle = tokio::spawn(Self::AsyncSinkWorkerType::run(
+            self,
+            thingbuf_rx,
+            oneshot_rx,
+        ));
 
         (join_handle, thingbuf_tx, oneshot_tx)
     }
 }
 
 #[async_trait::async_trait]
-pub trait AsyncStreamWorker<T: ChannelType, ReturnType> {
-    async fn run(self, tx: ThingbufSender<T>, rx: oneshot::Receiver<()>) -> Result<ReturnType>;
+pub trait AsyncStreamWorker<T: ChannelType, ReturnType, UserData> {
+    async fn run(
+        user_data: UserData,
+        tx: ThingbufSender<T>,
+        rx: oneshot::Receiver<()>,
+    ) -> Result<ReturnType>;
 }
 
 #[async_trait::async_trait]
 pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
-    AsyncStreamWorker<T, WorkerReturnType> + Send + Sync + 'static
+    Sized
 {
+    type AsyncStreamWorkerType: AsyncStreamWorker<T, WorkerReturnType, Self>;
+
     async fn start(
         self,
     ) -> (
@@ -65,7 +77,11 @@ pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL
         let (thingbuf_tx, thingbuf_rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<()>();
 
-        let join_handle = tokio::spawn(self.run(thingbuf_tx, oneshot_rx));
+        let join_handle = tokio::spawn(Self::AsyncStreamWorkerType::run(
+            self,
+            thingbuf_tx,
+            oneshot_rx,
+        ));
 
         (join_handle, thingbuf_rx, oneshot_tx)
     }
@@ -279,10 +295,12 @@ mod tests {
 
     struct SimpleStream {}
 
+    struct SimpleAsyncStreamWorker {}
+
     #[async_trait::async_trait]
-    impl AsyncStreamWorker<u32, ()> for SimpleStream {
+    impl AsyncStreamWorker<u32, (), SimpleStream> for SimpleAsyncStreamWorker {
         async fn run(
-            self,
+            _user_data: SimpleStream,
             tx: ThingbufSender<u32>,
             _oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
@@ -295,7 +313,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Stream<u32, ()> for SimpleStream {}
+    impl Stream<u32, ()> for SimpleStream {
+        type AsyncStreamWorkerType = SimpleAsyncStreamWorker;
+    }
 
     struct X3 {}
 
@@ -361,18 +381,20 @@ mod tests {
     impl Link<u32, u32, ()> for Div2 {}
 
     struct SimpleSink {
-        out_tx: ThingbufSender<u32>, //used outside of pipeline
+        out_tx: ThingbufSender<u32>,
     }
 
+    struct SimpleAsyncSinkWorker {}
+
     #[async_trait::async_trait]
-    impl AsyncSinkWorker<u32, ()> for SimpleSink {
+    impl AsyncSinkWorker<u32, (), SimpleSink> for SimpleAsyncSinkWorker {
         async fn run(
-            self,
+            user_data: SimpleSink,
             rx: ThingbufReceiver<u32>,
             _oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
             while let Some(i) = rx.recv().await {
-                self.out_tx.send(i).await?;
+                user_data.out_tx.send(i).await?;
             }
 
             Ok(())
@@ -380,7 +402,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Sink<u32, ()> for SimpleSink {}
+    impl Sink<u32, ()> for SimpleSink {
+        type AsyncSinkWorkerType = SimpleAsyncSinkWorker;
+    }
 
     #[tokio::test]
     async fn test_macro() {
