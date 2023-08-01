@@ -10,24 +10,22 @@ use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};
 impl<T: Send + Sync + Clone + Default + 'static> ChannelType for T {}
 
 #[async_trait::async_trait]
-pub trait AsyncSinkWorker<T: ChannelType, ReturnType, UserData> {
+pub trait AsyncSinkWorker<T: ChannelType, UserData> {
     async fn run(
         user_data: UserData,
         rx: ThingbufReceiver<T>,
         oneshot: oneshot::Receiver<()>,
-    ) -> Result<ReturnType>;
+    ) -> Result<()>;
 }
 
 #[async_trait::async_trait]
-pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
-    Sized
-{
-    type AsyncSinkWorkerType: AsyncSinkWorker<T, WorkerReturnType, Self> + Send + Sync + 'static;
+pub trait Sink<T: ChannelType, const CHANNEL_SIZE: usize = 100>: Sized {
+    type AsyncSinkWorkerType: AsyncSinkWorker<T, Self> + Send + Sync + 'static;
 
     async fn start(
         self,
     ) -> (
-        JoinHandle<Result<WorkerReturnType>>,
+        JoinHandle<Result<()>>,
         ThingbufSender<T>,
         oneshot::Sender<()>,
     )
@@ -49,24 +47,22 @@ pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_S
 }
 
 #[async_trait::async_trait]
-pub trait AsyncStreamWorker<T: ChannelType, ReturnType, UserData> {
+pub trait AsyncStreamWorker<T: ChannelType, UserData> {
     async fn run(
         user_data: UserData,
         tx: ThingbufSender<T>,
         rx: oneshot::Receiver<()>,
-    ) -> Result<ReturnType>;
+    ) -> Result<()>;
 }
 
 #[async_trait::async_trait]
-pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
-    Sized
-{
-    type AsyncStreamWorkerType: AsyncStreamWorker<T, WorkerReturnType, Self>;
+pub trait Stream<T: ChannelType, const CHANNEL_SIZE: usize = 100>: Sized {
+    type AsyncStreamWorkerType: AsyncStreamWorker<T, Self>;
 
     async fn start(
         self,
     ) -> (
-        JoinHandle<Result<WorkerReturnType>>,
+        JoinHandle<Result<()>>,
         ThingbufReceiver<T>,
         oneshot::Sender<()>,
     )
@@ -88,28 +84,29 @@ pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL
 }
 
 #[async_trait::async_trait]
-pub trait AsyncLinkWorker<ConsumedType: ChannelType, ProducedType: ChannelType, ReturnType> {
+pub trait AsyncLinkWorker<ConsumedType: ChannelType, ProducedType: ChannelType, UserData> {
     async fn run(
-        self,
+        user_data: UserData,
         rx: ThingbufReceiver<ConsumedType>,
         tx: ThingbufSender<ProducedType>,
         oneshot: oneshot::Receiver<()>,
-    ) -> Result<ReturnType>;
+    ) -> Result<()>;
 }
 
 #[async_trait::async_trait]
 pub trait Link<
     ConsumedType: ChannelType,
     ProducedType: ChannelType,
-    WorkerReturnType: Send + 'static,
     const SINK_CHANNEL_SIZE: usize = 100,
     const STREAM_CHANNEL_SIZE: usize = 100,
->: Send + AsyncLinkWorker<ConsumedType, ProducedType, WorkerReturnType> + 'static
+>: Send + Sized
 {
+    type AsyncLinkWorkerType: AsyncLinkWorker<ConsumedType, ProducedType, Self>;
+
     async fn start(
         self,
     ) -> (
-        JoinHandle<Result<WorkerReturnType>>,
+        JoinHandle<Result<()>>,
         ThingbufSender<ConsumedType>,
         ThingbufReceiver<ProducedType>,
         oneshot::Sender<()>,
@@ -123,7 +120,9 @@ pub trait Link<
         let (outer_tx, outer_rx) = thingbuf::mpsc::channel::<ProducedType>(STREAM_CHANNEL_SIZE);
         let (oneshot_tx, oneshot_rx) = oneshot::channel::<()>();
 
-        let join_handle = tokio::spawn(self.run(inner_rx, outer_tx, oneshot_rx));
+        let join_handle = tokio::spawn(Self::AsyncLinkWorkerType::run(
+            self, inner_rx, outer_tx, oneshot_rx,
+        ));
 
         (join_handle, inner_tx, outer_rx, oneshot_tx)
     }
@@ -133,8 +132,8 @@ pub struct LinkWrapper<
     InputType: ChannelType,
     OutputType: ChannelType,
     CommunicationType: ChannelType,
-    Link1: Link<InputType, CommunicationType, (), L1_SINK_CHANNEL_SIZE, L1_STREAM_CHANNEL_SIZE>,
-    Link2: Link<CommunicationType, OutputType, (), L2_SINK_CHANNEL_SIZE, L2_STREAM_CHANNEL_SIZE>,
+    Link1: Link<InputType, CommunicationType, L1_SINK_CHANNEL_SIZE, L1_STREAM_CHANNEL_SIZE>,
+    Link2: Link<CommunicationType, OutputType, L2_SINK_CHANNEL_SIZE, L2_STREAM_CHANNEL_SIZE>,
     const L1_SINK_CHANNEL_SIZE: usize = 100,
     const L1_STREAM_CHANNEL_SIZE: usize = 100,
     const L2_SINK_CHANNEL_SIZE: usize = 100,
@@ -153,8 +152,8 @@ impl<
         InputType: ChannelType,
         OutputType: ChannelType,
         CommunicationType: ChannelType,
-        Link1: Link<InputType, CommunicationType, ()>,
-        Link2: Link<CommunicationType, OutputType, ()>,
+        Link1: Link<InputType, CommunicationType>,
+        Link2: Link<CommunicationType, OutputType>,
     > LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     #[allow(dead_code)]
@@ -169,24 +168,30 @@ impl<
     }
 }
 
+pub struct LinkWrapperWorker {}
+
 #[async_trait::async_trait]
 impl<
         InputType: ChannelType,
         OutputType: ChannelType,
         CommunicationType: ChannelType,
-        Link1: Link<InputType, CommunicationType, ()>,
-        Link2: Link<CommunicationType, OutputType, ()>,
-    > AsyncLinkWorker<InputType, OutputType, ()>
-    for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
+        Link1: Link<InputType, CommunicationType> + Send + 'static,
+        Link2: Link<CommunicationType, OutputType> + Send + 'static,
+    >
+    AsyncLinkWorker<
+        InputType,
+        OutputType,
+        LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>,
+    > for LinkWrapperWorker
 {
     async fn run(
-        self,
+        user_data: LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>,
         rx: ThingbufReceiver<InputType>,
         tx: ThingbufSender<OutputType>,
         oneshot: oneshot::Receiver<()>,
     ) -> Result<()> {
-        let (link1_join_handle, link1_tx, link1_rx, lhs_oneshot_tx) = self.link1.start().await;
-        let (link2_join_handle, link2_tx, link2_rx, rhs_oneshot_tx) = self.link2.start().await;
+        let (link1_join_handle, link1_tx, link1_rx, lhs_oneshot_tx) = user_data.link1.start().await;
+        let (link2_join_handle, link2_tx, link2_rx, rhs_oneshot_tx) = user_data.link2.start().await;
 
         use tokio::spawn;
 
@@ -218,11 +223,12 @@ impl<
         InputType: ChannelType,
         OutputType: ChannelType,
         CommunicationType: ChannelType,
-        Link1: Link<InputType, CommunicationType, ()>,
-        Link2: Link<CommunicationType, OutputType, ()>,
-    > Link<InputType, OutputType, ()>
+        Link1: Link<InputType, CommunicationType> + Send + 'static,
+        Link2: Link<CommunicationType, OutputType> + Send + 'static,
+    > Link<InputType, OutputType>
     for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
+    type AsyncLinkWorkerType = LinkWrapperWorker;
 }
 
 pub async fn link_channels<T: ChannelType>(
@@ -268,9 +274,8 @@ macro_rules! start_and_link_all {
             let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await; //TODO oneshot
             branches.push(oneshot_tx);
 
-            let link1 = spawn(link_channels(stream_rx, link_tx));
-            let link2 = spawn(link_channels(link_rx, sink_tx));
-
+            let stream_link = spawn(link_channels(stream_rx, link_tx));
+            let link_sink = spawn(link_channels(link_rx, sink_tx));
 
             let oneshot_rx = $oneshot_rx;
             let branch_channels = spawn(branch_channels(oneshot_rx, branches));
@@ -279,8 +284,8 @@ macro_rules! start_and_link_all {
                 stream_join_handle,
                 link_join_handle,
                 sink_join_handle,
-                link1,
-                link2,
+                stream_link,
+                link_sink,
                 branch_channels
             );
 
@@ -298,7 +303,7 @@ mod tests {
     struct SimpleAsyncStreamWorker {}
 
     #[async_trait::async_trait]
-    impl AsyncStreamWorker<u32, (), SimpleStream> for SimpleAsyncStreamWorker {
+    impl AsyncStreamWorker<u32, SimpleStream> for SimpleAsyncStreamWorker {
         async fn run(
             _user_data: SimpleStream,
             tx: ThingbufSender<u32>,
@@ -313,16 +318,17 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Stream<u32, ()> for SimpleStream {
+    impl Stream<u32> for SimpleStream {
         type AsyncStreamWorkerType = SimpleAsyncStreamWorker;
     }
 
     struct X3 {}
+    struct X3Worker {}
 
     #[async_trait::async_trait]
-    impl AsyncLinkWorker<u32, u32, ()> for X3 {
+    impl AsyncLinkWorker<u32, u32, X3> for X3Worker {
         async fn run(
-            self,
+            _: X3,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
             _oneshot_rx: oneshot::Receiver<()>,
@@ -336,14 +342,17 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Link<u32, u32, ()> for X3 {}
+    impl Link<u32, u32> for X3 {
+        type AsyncLinkWorkerType = X3Worker;
+    }
 
     struct X10 {}
+    struct X10Worker {}
 
     #[async_trait::async_trait]
-    impl AsyncLinkWorker<u32, u32, ()> for X10 {
+    impl AsyncLinkWorker<u32, u32, X10> for X10Worker {
         async fn run(
-            self,
+            _: X10,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
             _oneshot_rx: oneshot::Receiver<()>,
@@ -357,14 +366,17 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Link<u32, u32, ()> for X10 {}
+    impl Link<u32, u32> for X10 {
+        type AsyncLinkWorkerType = X10Worker;
+    }
 
     struct Div2 {}
+    struct Div2Worker {}
 
     #[async_trait::async_trait]
-    impl AsyncLinkWorker<u32, u32, ()> for Div2 {
+    impl AsyncLinkWorker<u32, u32, Div2> for Div2Worker {
         async fn run(
-            self,
+            _: Div2,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
             _oneshot_rx: oneshot::Receiver<()>,
@@ -378,7 +390,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Link<u32, u32, ()> for Div2 {}
+    impl Link<u32, u32> for Div2 {
+        type AsyncLinkWorkerType = Div2Worker;
+    }
 
     struct SimpleSink {
         out_tx: ThingbufSender<u32>,
@@ -387,7 +401,7 @@ mod tests {
     struct SimpleAsyncSinkWorker {}
 
     #[async_trait::async_trait]
-    impl AsyncSinkWorker<u32, (), SimpleSink> for SimpleAsyncSinkWorker {
+    impl AsyncSinkWorker<u32, SimpleSink> for SimpleAsyncSinkWorker {
         async fn run(
             user_data: SimpleSink,
             rx: ThingbufReceiver<u32>,
@@ -402,7 +416,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Sink<u32, ()> for SimpleSink {
+    impl Sink<u32> for SimpleSink {
         type AsyncSinkWorkerType = SimpleAsyncSinkWorker;
     }
 
@@ -429,9 +443,13 @@ mod tests {
         let receiver_task = spawn(async move {
             let mut i = 0;
             while let Some(j) = pipeline_rx.recv().await {
-                assert_eq!(j, i * 15);
+                assert_eq!(j, i * 5);
                 i += 1;
             }
+
+            println!("receiver task finished");
+
+            assert_eq!(i, 10);
         });
 
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
