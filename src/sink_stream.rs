@@ -205,7 +205,7 @@ impl<
 
         let link_internal = spawn(link_channels(link1_rx, link2_tx));
 
-        let _ = tokio::join!(
+        let res = tokio::try_join!(
             link1_join_handle,
             link2_join_handle,
             branch_channels,
@@ -214,7 +214,12 @@ impl<
             link_internal
         );
 
-        Ok(())
+        match res {
+            Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
+            _ => Err(
+                std::io::Error::new(std::io::ErrorKind::Other, "LinkWrapperWorker failed").into(),
+            ),
+        }
     }
 }
 
@@ -313,13 +318,34 @@ mod tests {
         async fn run(
             _user_data: SimpleStream,
             tx: ThingbufSender<u32>,
-            _oneshot_rx: oneshot::Receiver<()>,
+            oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
-            for i in 0..10 {
-                tx.send(i).await?;
-            }
+            let oneshot_task = tokio::spawn(async move { oneshot_rx.await });
 
-            Ok(())
+            let loop_task = tokio::spawn(async move {
+                for i in 0..10 {
+                    tx.send(i).await?;
+                }
+
+                Ok::<(), thingbuf::mpsc::errors::Closed<_>>(())
+            });
+
+            let res = tokio::select!(
+                res = oneshot_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::Other, "oneshot error").into())
+                    }
+                },
+                res = loop_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::Other, "loop error").into())
+                    }
+                }
+            );
+
+            res
         }
     }
 
@@ -337,13 +363,34 @@ mod tests {
             _: X3,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
-            _oneshot_rx: oneshot::Receiver<()>,
+            oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
-            while let Some(i) = rx.recv().await {
-                tx.send(i * 3).await?;
-            }
+            let oneshot_task = tokio::spawn(async move { oneshot_rx.await });
 
-            Ok(())
+            let loop_task = tokio::spawn(async move {
+                while let Some(i) = rx.recv().await {
+                    tx.send(i * 3).await?;
+                }
+
+                Ok::<(), thingbuf::mpsc::errors::Closed<_>>(())
+            });
+
+            let res = tokio::select!(
+                res = oneshot_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::Other, "oneshot error").into())
+                    }
+                },
+                res = loop_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(std::io::Error::new(std::io::ErrorKind::Other, "loop error").into())
+                    }
+                }
+            );
+
+            res
         }
     }
 
@@ -361,13 +408,34 @@ mod tests {
             _: X10,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
-            _oneshot_rx: oneshot::Receiver<()>,
+            oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
-            while let Some(i) = rx.recv().await {
-                tx.send(i * 10).await?;
-            }
+            let oneshot_task = tokio::spawn(async move { oneshot_rx.await });
 
-            Ok(())
+            let loop_task = tokio::spawn(async move {
+                while let Some(i) = rx.recv().await {
+                    tx.send(i * 10).await?;
+                }
+
+                Ok::<(), thingbuf::mpsc::errors::Closed<_>>(())
+            });
+
+            let res = tokio::select!(
+                res = oneshot_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                },
+                res = loop_task => {
+                    match res {
+                        Ok(Ok(_)) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                }
+            );
+
+            res
         }
     }
 
@@ -385,13 +453,34 @@ mod tests {
             _: Div2,
             rx: ThingbufReceiver<u32>,
             tx: ThingbufSender<u32>,
-            _oneshot_rx: oneshot::Receiver<()>,
+            oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
-            while let Some(i) = rx.recv().await {
-                tx.send(i / 2).await?;
-            }
+            let oneshot_task = tokio::spawn(async move { oneshot_rx.await });
 
-            Ok(())
+            let loop_task = tokio::spawn(async move {
+                while let Some(i) = rx.recv().await {
+                    tx.send(i / 2).await?;
+                }
+
+                Ok::<(), thingbuf::mpsc::errors::Closed<_>>(())
+            });
+
+            let res = tokio::select!(
+                res = oneshot_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                },
+                res = loop_task => {
+                    match res {
+                        Ok(Ok(_)) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                }
+            );
+
+            res
         }
     }
 
@@ -411,13 +500,40 @@ mod tests {
         async fn run(
             user_data: SimpleSink,
             rx: ThingbufReceiver<u32>,
-            _oneshot_rx: oneshot::Receiver<()>,
+            oneshot_rx: oneshot::Receiver<()>,
         ) -> Result<()> {
-            while let Some(i) = rx.recv().await {
-                user_data.out_tx.send(i).await?;
-            }
+            let oneshot_task = tokio::spawn(async move {
+                let res = oneshot_rx.await;
 
-            Ok(())
+                println!("SimpleSink oneshot_task done");
+
+                res
+            });
+
+            let loop_task = tokio::spawn(async move {
+                while let Some(i) = rx.recv().await {
+                    user_data.out_tx.send(i).await?;
+                }
+
+                Ok::<(), thingbuf::mpsc::errors::Closed<_>>(())
+            });
+
+            let res = tokio::select!(
+                res = oneshot_task => {
+                    match res {
+                        Ok(_) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                },
+                res = loop_task => {
+                    match res {
+                        Ok(Ok(_)) => Ok(()),
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "Error in Div2Worker").into()),
+                    }
+                }
+            );
+
+            res
         }
     }
 
@@ -475,12 +591,65 @@ mod tests {
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
 
         match tokio::select! {
-            Ok(_) = pipeline_task => { Ok(()) },
+            Ok(Ok(_)) = pipeline_task => { Ok(()) },
             _ = sleep_task => { Err(()) },
         } {
             Ok(_) => {}
             Err(_) => {
                 panic!("pipeline task did not finish!");
+            }
+        }
+    }
+
+    struct FailingSink {}
+
+    pub struct FailingAsyncSinkWorker {}
+
+    #[async_trait::async_trait]
+    impl Sink<u32> for FailingSink {
+        type AsyncSinkWorkerType = FailingAsyncSinkWorker;
+    }
+
+    #[async_trait::async_trait]
+    impl AsyncSinkWorker<u32, FailingSink> for FailingAsyncSinkWorker {
+        async fn run(
+            _user_data: FailingSink,
+            _rx: ThingbufReceiver<u32>,
+            _oneshot_rx: oneshot::Receiver<()>,
+        ) -> Result<()> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "FailingAsyncSinkWorker").into())
+        }
+    }
+
+    #[tokio::test]
+    async fn failing_sink() {
+        use tokio::spawn;
+
+        let stream = SimpleStream {};
+        let x3 = X3 {};
+        let x10 = X10 {};
+        let div2 = Div2 {};
+
+        let link = eval_links!(x3, x10, div2);
+
+        let (_pipeline_tx, pipeline_rx) = thingbuf::mpsc::channel::<u32>(10);
+        let sink = FailingSink {};
+
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+
+        let pipeline_task = spawn(start_and_link_all!(oneshot_rx, stream, link, sink));
+
+        oneshot_tx.send(()).unwrap();
+
+        let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
+
+        match tokio::select! {
+            Ok(Err(_)) = pipeline_task => { Ok(()) },
+            _ = sleep_task => { Err(()) },
+        } {
+            Ok(_) => {}
+            Err(_) => {
+                panic!("pipeline task did not finish with error!");
             }
         }
     }
