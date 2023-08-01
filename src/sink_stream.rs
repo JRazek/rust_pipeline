@@ -44,23 +44,30 @@ pub trait Sink<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_S
 
 #[async_trait::async_trait]
 pub trait AsyncStreamWorker<T: ChannelType, ReturnType> {
-    async fn run(self, tx: ThingbufSender<T>) -> Result<ReturnType>;
+    async fn run(self, tx: ThingbufSender<T>, rx: oneshot::Receiver<()>) -> Result<ReturnType>;
 }
 
 #[async_trait::async_trait]
 pub trait Stream<T: ChannelType, WorkerReturnType: Send + 'static, const CHANNEL_SIZE: usize = 100>:
     AsyncStreamWorker<T, WorkerReturnType> + Send + Sync + 'static
 {
-    async fn start(self) -> (JoinHandle<Result<WorkerReturnType>>, ThingbufReceiver<T>)
+    async fn start(
+        self,
+    ) -> (
+        JoinHandle<Result<WorkerReturnType>>,
+        ThingbufReceiver<T>,
+        oneshot::Sender<()>,
+    )
     where
         Self: Sized,
         T: ChannelType,
     {
-        let (tx, rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
+        let (thingbuf_tx, thingbuf_rx) = thingbuf::mpsc::channel::<T>(CHANNEL_SIZE);
+        let (oneshot_tx, oneshot_rx) = oneshot::channel::<()>();
 
-        let join_handle = tokio::spawn(self.run(tx));
+        let join_handle = tokio::spawn(self.run(thingbuf_tx, oneshot_rx));
 
-        (join_handle, rx)
+        (join_handle, thingbuf_rx, oneshot_tx)
     }
 }
 
@@ -222,7 +229,7 @@ macro_rules! start_and_link_all {
         let link = eval_links!($($link),+);
         let sink = $sink;
 
-        let (stream_join_handle, stream_rx) = stream.start().await;
+        let (stream_join_handle, stream_rx, oneshot_tx) = stream.start().await;
         let (link_join_handle, link_tx, link_rx) = link.start().await;
         let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await; //TODO oneshot
 
@@ -247,7 +254,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AsyncStreamWorker<u32, ()> for SimpleStream {
-        async fn run(self, tx: ThingbufSender<u32>) -> Result<()> {
+        async fn run(
+            self,
+            tx: ThingbufSender<u32>,
+            _oneshot_rx: oneshot::Receiver<()>,
+        ) -> Result<()> {
             for i in 0..10 {
                 tx.send(i).await?;
             }
