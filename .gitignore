@@ -1,0 +1,18 @@
+# Ignore everything
+*
+
+# Don't ignore directories
+!.github/
+!src/
+!docs/
+
+# Don't ignore specific files
+!.gitignore
+!Cargo.lock
+!Cargo.toml
+!README.md
+
+# Don't ignore contents of directories
+!.github/**
+!src/**
+!docs/**
