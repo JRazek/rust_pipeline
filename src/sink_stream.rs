@@ -271,7 +271,7 @@ macro_rules! start_and_link_all {
             let (link_join_handle, link_tx, link_rx, oneshot_tx) = link.start().await;
             branches.push(oneshot_tx);
 
-            let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await; //TODO oneshot
+            let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await;
             branches.push(oneshot_tx);
 
             let stream_link = spawn(link_channels(stream_rx, link_tx));
@@ -280,7 +280,7 @@ macro_rules! start_and_link_all {
             let oneshot_rx = $oneshot_rx;
             let branch_channels = spawn(branch_channels(oneshot_rx, branches));
 
-            let _ = tokio::join!(
+            let res = tokio::try_join!(
                 stream_join_handle,
                 link_join_handle,
                 sink_join_handle,
@@ -289,7 +289,13 @@ macro_rules! start_and_link_all {
                 branch_channels
             );
 
-            //TODO return result (or log error!)
+            match res {
+                Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Error in start_and_link_all",
+                )),
+            }
         }
     }};
 }
@@ -443,7 +449,7 @@ mod tests {
         let receiver_task = spawn(async move {
             let mut i = 0;
             while let Some(j) = pipeline_rx.recv().await {
-                assert_eq!(j, i * 5);
+                assert_eq!(j, i * 15);
                 i += 1;
             }
 
@@ -455,7 +461,7 @@ mod tests {
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
 
         match tokio::select! {
-            _ = receiver_task => { Ok(()) },
+            Ok(_) = receiver_task => { Ok(()) },
             _ = sleep_task => { Err(()) },
         } {
             Ok(_) => {}
@@ -469,7 +475,7 @@ mod tests {
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
 
         match tokio::select! {
-            _ = pipeline_task => { Ok(()) },
+            Ok(_) = pipeline_task => { Ok(()) },
             _ = sleep_task => { Err(()) },
         } {
             Ok(_) => {}
