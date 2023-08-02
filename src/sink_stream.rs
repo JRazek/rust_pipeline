@@ -6,6 +6,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};
 
+use super::channel_utils::link_thingbuf_channels;
+
 //TODO when stable rust: trait ChannelType = Send + Sync + Default + 'static;
 impl<T: Send + Sync + Clone + Default + 'static> ChannelType for T {}
 
@@ -200,10 +202,10 @@ impl<
             vec![lhs_oneshot_tx, rhs_oneshot_tx],
         ));
 
-        let link_in = spawn(link_channels(rx, link1_tx));
-        let link_out = spawn(link_channels(link2_rx, tx));
+        let link_in = spawn(link_thingbuf_channels(rx, link1_tx));
+        let link_out = spawn(link_thingbuf_channels(link2_rx, tx));
 
-        let link_internal = spawn(link_channels(link1_rx, link2_tx));
+        let link_internal = spawn(link_thingbuf_channels(link1_rx, link2_tx));
 
         let res = tokio::try_join!(
             link1_join_handle,
@@ -234,17 +236,6 @@ impl<
     for LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>
 {
     type AsyncLinkWorkerType = LinkWrapperWorker;
-}
-
-pub async fn link_channels<T: ChannelType>(
-    rx: ThingbufReceiver<T>,
-    tx: ThingbufSender<T>,
-) -> Result<()> {
-    while let Some(i) = rx.recv().await {
-        tx.send(i).await?;
-    }
-
-    Ok(())
 }
 
 #[macro_export]

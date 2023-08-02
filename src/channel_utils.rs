@@ -3,7 +3,6 @@ use tokio::sync::oneshot;
 
 pub trait ChannelType: Send + Sync + Clone + Default + 'static {}
 
-#[allow(dead_code)]
 pub async fn branch_channels<T: ChannelType + std::fmt::Debug>(
     input_rx: oneshot::Receiver<T>,
     branches: Vec<oneshot::Sender<T>>,
@@ -22,6 +21,34 @@ pub async fn branch_channels<T: ChannelType + std::fmt::Debug>(
         .map(|tx| matcher(tx.send(input.clone())))
         .collect::<Result<()>>();
     //TODO return error
+
+    Ok(())
+}
+
+use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};
+
+pub async fn link_thingbuf_channels<T: ChannelType>(
+    rx: ThingbufReceiver<T>,
+    tx: ThingbufSender<T>,
+) -> Result<()> {
+    while let Some(i) = rx.recv().await {
+        tx.send(i).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn link_oneshot_channels<T: Send + Sync>(
+    rx: oneshot::Receiver<T>,
+    tx: oneshot::Sender<T>,
+) -> Result<()> {
+    if let Ok(i) = rx.await {
+        if let Err(_) = tx.send(i) {
+            return Err(
+                std::io::Error::new(std::io::ErrorKind::Other, "could not pipe oneshot!").into(),
+            );
+        }
+    }
 
     Ok(())
 }
