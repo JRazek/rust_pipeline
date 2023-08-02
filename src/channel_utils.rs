@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 
 pub trait ChannelType: Send + Sync + Clone + Default + 'static {}
 
-pub async fn branch_channels<T: ChannelType + std::fmt::Debug>(
+pub async fn branch_oneshot_channels<T: ChannelType + std::fmt::Debug>(
     input_rx: oneshot::Receiver<T>,
     branches: Vec<oneshot::Sender<T>>,
 ) -> Result<()> {

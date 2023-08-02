@@ -1,4 +1,4 @@
-use super::channel_utils::{branch_channels, ChannelType};
+use super::channel_utils::{branch_oneshot_channels, ChannelType};
 use std::marker::PhantomData;
 use tokio::{sync::oneshot, task::JoinHandle};
 
@@ -197,7 +197,7 @@ impl<
 
         use tokio::spawn;
 
-        let branch_channels = spawn(branch_channels(
+        let branch_channels = spawn(branch_oneshot_channels(
             oneshot,
             vec![lhs_oneshot_tx, rhs_oneshot_tx],
         ));
@@ -270,11 +270,11 @@ macro_rules! start_and_link_all {
             let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await;
             branches.push(oneshot_tx);
 
-            let stream_link = spawn(link_channels(stream_rx, link_tx));
-            let link_sink = spawn(link_channels(link_rx, sink_tx));
+            let stream_link = spawn(link_thingbuf_channels(stream_rx, link_tx));
+            let link_sink = spawn(link_thingbuf_channels(link_rx, sink_tx));
 
             let oneshot_rx = $oneshot_rx;
-            let branch_channels = spawn(branch_channels(oneshot_rx, branches));
+            let branch_channels = spawn(branch_oneshot_channels(oneshot_rx, branches));
 
             let res = tokio::try_join!(
                 stream_join_handle,
@@ -623,7 +623,7 @@ mod tests {
 
         let link = eval_links!(x3, x10, div2);
 
-        let (_pipeline_tx, pipeline_rx) = thingbuf::mpsc::channel::<u32>(10);
+        let (_pipeline_tx, _pipeline_rx) = thingbuf::mpsc::channel::<u32>(10);
         let sink = FailingSink {};
 
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
