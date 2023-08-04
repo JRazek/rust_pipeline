@@ -1,4 +1,5 @@
 use super::sink_stream::Result;
+use futures::StreamExt;
 use tokio::sync::oneshot;
 
 pub trait ChannelType: Send + Sync + Clone + Default + 'static {}
@@ -16,13 +17,47 @@ pub async fn branch_oneshot_channels<T: ChannelType + std::fmt::Debug>(
         }
     };
 
-    let _branches = branches
+    let branches = branches
         .into_iter()
-        .map(|tx| matcher(tx.send(input.clone())))
+        .map(|tx| {
+            matcher(
+                tx.send(input.clone())
+                    .map_err(|e| (eprintln!("{:?}", e), e)),
+            )
+        })
         .collect::<Result<()>>();
-    //TODO return error
+
+    eprintln!("branch_oneshot_channel results: {:?}", branches);
 
     Ok(())
+}
+
+pub async fn join_oneshot_channels<T: ChannelType + std::fmt::Debug>(
+    inputs_rx: Vec<oneshot::Receiver<T>>,
+    output_tx: oneshot::Sender<T>,
+) -> Result<()> {
+    use futures::stream::FuturesUnordered;
+
+    let mut tasks = inputs_rx.into_iter().collect::<FuturesUnordered<_>>();
+
+    let res = match tasks.next().await {
+        Some(Ok(res)) => output_tx.send(res).map_err(|_| {
+            eprintln!("Error sending to channel");
+            std::io::Error::new(std::io::ErrorKind::Other, "Error sending to channel").into()
+        }),
+        Some(Err(_)) => {
+            eprintln!("Error receiving from channel");
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Error").into());
+        }
+        _ => {
+            eprintln!("Error receiving from channel");
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Error").into());
+        }
+    };
+
+    eprintln!("join_oneshot_channels: {:?}", res);
+
+    res
 }
 
 use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};

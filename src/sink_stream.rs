@@ -378,8 +378,8 @@ mod tests {
         type AsyncLinkWorkerType = X10Worker;
     }
 
-    struct Div2 {}
-    struct Div2Worker {}
+    struct Div2;
+    struct Div2Worker;
 
     #[async_trait::async_trait]
     impl AsyncLinkWorker<u32, u32, Div2> for Div2Worker {
@@ -492,7 +492,7 @@ mod tests {
             out_tx: pipeline_tx,
         };
 
-        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+        let (_oneshot_tx, oneshot_rx) = oneshot::channel();
 
         let pipeline_task = spawn(start_and_link_all!(oneshot_rx, stream, link, sink));
 
@@ -510,17 +510,12 @@ mod tests {
 
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
 
-        match tokio::select! {
-            Ok(_) = receiver_task => { Ok(()) },
-            _ = sleep_task => { Err(()) },
-        } {
-            Ok(_) => {}
-            Err(_) => {
-                panic!("receiver task failed");
-            }
-        }
-
-        oneshot_tx.send(()).unwrap();
+        tokio::select! {
+            Ok(_) = receiver_task => {},
+            _ = sleep_task => {
+                panic!("receiver task did not finish!");
+            },
+        };
 
         let sleep_task = spawn(tokio::time::sleep(tokio::time::Duration::from_millis(100)));
 
@@ -555,6 +550,73 @@ mod tests {
         }
     }
 
+    struct TimedLink;
+    struct TimedLinkWorker;
+
+    impl Link<u32, u32> for TimedLink {
+        type AsyncLinkWorkerType = TimedLinkWorker;
+    }
+
+    #[async_trait::async_trait]
+    impl AsyncLinkWorker<u32, u32, TimedLink> for TimedLinkWorker {
+        async fn run(
+            _: TimedLink,
+            _rx: ThingbufReceiver<u32>,
+            _tx: ThingbufSender<u32>,
+            _oneshot_rx: oneshot::Receiver<()>,
+        ) -> Result<()> {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+            println!("TimedLinkWorker done");
+            Ok(())
+        }
+    }
+
+    struct DummySink;
+    struct DummySinkWorker;
+
+    impl Sink<u32> for DummySink {
+        type AsyncSinkWorkerType = DummySinkWorker;
+    }
+
+    #[async_trait::async_trait]
+    impl AsyncSinkWorker<u32, DummySink> for DummySinkWorker {
+        async fn run(
+            _: DummySink,
+            _rx: ThingbufReceiver<u32>,
+            oneshot_rx: oneshot::Receiver<()>,
+        ) -> Result<()> {
+            oneshot_rx.await?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_link_test() {
+        let stream = SimpleStream {};
+        let timed_link = TimedLink;
+        let sink = DummySink;
+
+        let link = eval_links!(timed_link);
+
+        let (_oneshot_tx, oneshot_rx) = oneshot::channel();
+
+        let pipeline_task = tokio::spawn(start_and_link_all!(oneshot_rx, stream, link, sink));
+
+        let sleep_task = tokio::spawn(tokio::time::sleep(tokio::time::Duration::from_secs(1)));
+
+        tokio::select! {
+            res = pipeline_task => {
+                match res {
+                    Ok(Ok(_)) => { Ok(()) },
+                    _ => { Err(()) }
+                }
+            },
+            _ = sleep_task => { Err(()) },
+        }
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn failing_sink() {
         use tokio::spawn;
@@ -563,11 +625,11 @@ mod tests {
         let x3 = X3 {};
         let x10 = X10 {};
         let div2 = Div2 {};
+        let sink = FailingSink {};
 
         let link = eval_links!(x3, x10, div2);
 
         let (_pipeline_tx, _pipeline_rx) = thingbuf::mpsc::channel::<u32>(10);
-        let sink = FailingSink {};
 
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
 
