@@ -4,9 +4,10 @@ macro_rules! eval_links {
         $link
     };
 
-    ($link:expr, $($links:expr),+) => {
+    ($link:expr, $($links:expr),+) => {{
+        use $crate::sink_stream::*;
         LinkWrapper::new($link, eval_links!($($links),*))
-    };
+    }};
 }
 
 #[macro_export]
