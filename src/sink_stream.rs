@@ -238,67 +238,10 @@ impl<
     type AsyncLinkWorkerType = LinkWrapperWorker;
 }
 
-#[macro_export]
-macro_rules! eval_links {
-    ($link:expr) => {
-        $link
-    };
-
-    ($link:expr, $($links:expr),+) => {
-        LinkWrapper::new($link, eval_links!($($links),*))
-    };
-}
-
-#[macro_export]
-macro_rules! start_and_link_all {
-    ($oneshot_rx:expr, $stream:expr, $($link:expr);+, $sink:expr) => {{
-        async move {
-            let stream = $stream;
-            let link = eval_links!($($link),+);
-            let sink = $sink;
-
-            use tokio::spawn;
-
-            let mut branches = Vec::new();
-
-            let (stream_join_handle, stream_rx, oneshot_tx) = stream.start().await;
-            branches.push(oneshot_tx);
-
-            let (link_join_handle, link_tx, link_rx, oneshot_tx) = link.start().await;
-            branches.push(oneshot_tx);
-
-            let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await;
-            branches.push(oneshot_tx);
-
-            let stream_link = spawn(link_thingbuf_channels(stream_rx, link_tx));
-            let link_sink = spawn(link_thingbuf_channels(link_rx, sink_tx));
-
-            let oneshot_rx = $oneshot_rx;
-            let branch_channels = spawn(branch_oneshot_channels(oneshot_rx, branches));
-
-            let res = tokio::try_join!(
-                stream_join_handle,
-                link_join_handle,
-                sink_join_handle,
-                stream_link,
-                link_sink,
-                branch_channels
-            );
-
-            match res {
-                Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
-                _ => Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Error in start_and_link_all",
-                )),
-            }
-        }
-    }};
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{eval_links, start_and_link_all};
 
     struct SimpleStream {}
 
