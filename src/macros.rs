@@ -45,33 +45,46 @@ macro_rules! start_and_link_all {
             let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await;
             inner_branches.push(oneshot_tx);
 
-            let stream_link = spawn(link_thingbuf_channels(stream_rx, link_tx));
-            let link_sink = spawn(link_thingbuf_channels(link_rx, sink_tx));
+            let _ = spawn(link_thingbuf_channels(stream_rx, link_tx));
+            let _ = spawn(link_thingbuf_channels(link_rx, sink_tx));
 
             let (link_oneshot_tx, link_oneshot_rx) = oneshot::channel::<()>();
 
             let (feedback_loop_onshot_tx, feedback_loop_oneshot_rx) = oneshot::channel::<()>();
             outer_joints.push(feedback_loop_oneshot_rx);
 
-            let joint = spawn(join_oneshot_channels(outer_joints, link_oneshot_tx));
-            let branch_channels = spawn(branch_oneshot_channels(link_oneshot_rx, inner_branches));
+            let _ = spawn(async move{
+                let join_channels = spawn(join_oneshot_channels(outer_joints, link_oneshot_tx));
+                let branch_channels = spawn(branch_oneshot_channels(link_oneshot_rx, inner_branches));
+
+                match (join_channels.await, branch_channels.await) {
+                    (Ok(_), Ok(_)) => {}
+                    _ => { eprintln!("error occured in mpmc_task!"); }
+                };
+            });
 
             let mut futures = FuturesUnordered::new();
 
             futures.push(stream_join_handle);
-            futures.push(link_join_handle);
+//            futures.push(link_join_handle);
             futures.push(sink_join_handle);
-            futures.push(stream_link);
-            futures.push(link_sink);
-            futures.push(joint);
-            futures.push(branch_channels);
+//            futures.push(stream_link);
+//            futures.push(link_sink);
+
+//            futures.push(mpmc_task);
+
+            let futures_count = futures.len();
+            let mut left_futures = futures_count;
 
             let pipeline_tasks = async move {
                 if let Some(res) = futures.next().await {
                     match res {
                         Ok(Ok(_)) => {
                             eprintln!("feedback loop oneshot fired");
-                            feedback_loop_onshot_tx.send(()).unwrap();
+                            feedback_loop_onshot_tx.send(()).expect("feedback loop oneshot send failed");
+
+                            left_futures -= 1;
+                            eprintln!("left [{}/{}] futures", left_futures, futures_count);
                         },
                         Ok(Err(e)) => {
                             return Err(e);
@@ -81,6 +94,7 @@ macro_rules! start_and_link_all {
                         }
                     }
                 }
+
                 while let Some(res) = futures.next().await {
                     match res {
                         Err(e) => {
@@ -89,7 +103,10 @@ macro_rules! start_and_link_all {
                         Ok(Err(_)) => {
                             return Err(std::io::Error::new(std::io::ErrorKind::Other, "Error").into());
                         }
-                        Ok(Ok(_)) => {}
+                        Ok(Ok(_)) => {
+                            left_futures -= 1;
+                            eprintln!("left [{}/{}] futures", left_futures, futures_count);
+                        }
                     }
                 }
 

@@ -218,9 +218,13 @@ impl<
 
         match res {
             Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
-            _ => Err(
-                std::io::Error::new(std::io::ErrorKind::Other, "LinkWrapperWorker failed").into(),
-            ),
+            _ => {
+                eprint!("LinkWrapperWorker failed");
+                Err(
+                    std::io::Error::new(std::io::ErrorKind::Other, "LinkWrapperWorker failed")
+                        .into(),
+                )
+            }
         }
     }
 }

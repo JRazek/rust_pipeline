@@ -10,22 +10,18 @@ pub async fn branch_oneshot_channels<T: ChannelType + std::fmt::Debug>(
 ) -> Result<()> {
     let input = input_rx.await?;
 
-    let matcher = |x| match x {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "Error sending to channel").into())
-        }
-    };
+    eprintln!("branch_oneshot_channel input: {:?}", input);
 
-    let branches = branches
-        .into_iter()
-        .map(|tx| {
-            matcher(
-                tx.send(input.clone())
-                    .map_err(|e| (eprintln!("{:?}", e), e)),
-            )
-        })
-        .collect::<Result<()>>();
+    let branches = branches.into_iter().for_each(|tx| {
+        if !tx.is_closed() {
+            match tx.send(input.clone()) {
+                Ok(_) => {}
+                Err(_) => {
+                    eprintln!("Error sending to channel in branch_oneshot_channel");
+                }
+            }
+        }
+    });
 
     eprintln!("branch_oneshot_channel results: {:?}", branches);
 
