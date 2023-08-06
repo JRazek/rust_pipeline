@@ -18,7 +18,6 @@ macro_rules! start_and_link_all {
             use futures::stream::StreamExt;
 
             use $crate::channel_utils::branch_oneshot_channels;
-            use $crate::channel_utils::link_thingbuf_channels;
             use $crate::channel_utils::join_oneshot_channels;
             use $crate::sink_stream::*;
 
@@ -45,14 +44,19 @@ macro_rules! start_and_link_all {
             let (sink_join_handle, sink_tx, oneshot_tx) = sink.start().await;
             inner_branches.push(oneshot_tx);
 
-            let _ = spawn(link_thingbuf_channels(stream_rx, link_tx));
-            let _ = spawn(link_thingbuf_channels(link_rx, sink_tx));
+
+            let (stream_link_task, oneshot_tx) = $crate::channel_utils::spawn_link_thingbuf_channels_oneshot(stream_rx, link_tx).await;
+            inner_branches.push(oneshot_tx);
+
+            let (link_sink_task, oneshot_tx) = $crate::channel_utils::spawn_link_thingbuf_channels_oneshot(link_rx, sink_tx).await;
+            inner_branches.push(oneshot_tx);
 
             let (link_oneshot_tx, link_oneshot_rx) = oneshot::channel::<()>();
 
             let (feedback_loop_onshot_tx, feedback_loop_oneshot_rx) = oneshot::channel::<()>();
             outer_joints.push(feedback_loop_oneshot_rx);
 
+            //TODO (same as others)
             let _ = spawn(async move{
                 let join_channels = spawn(join_oneshot_channels(outer_joints, link_oneshot_tx));
                 let branch_channels = spawn(branch_oneshot_channels(link_oneshot_rx, inner_branches));
@@ -66,10 +70,10 @@ macro_rules! start_and_link_all {
             let mut futures = FuturesUnordered::new();
 
             futures.push(stream_join_handle);
-//            futures.push(link_join_handle);
+            futures.push(link_join_handle);
             futures.push(sink_join_handle);
-//            futures.push(stream_link);
-//            futures.push(link_sink);
+            futures.push(stream_link_task);
+            futures.push(link_sink_task);
 
 //            futures.push(mpmc_task);
 

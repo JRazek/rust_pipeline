@@ -69,6 +69,32 @@ pub async fn link_thingbuf_channels<T: ChannelType>(
     Ok(())
 }
 
+pub async fn spawn_link_thingbuf_channels_oneshot<T: crate::channel_utils::ChannelType>(
+    rx: thingbuf::mpsc::Receiver<T>,
+    tx: thingbuf::mpsc::Sender<T>,
+) -> (
+    tokio::task::JoinHandle<crate::sink_stream::Result<()>>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let task = async move {
+        let link_task = crate::channel_utils::link_thingbuf_channels(rx, tx);
+        let oneshot_task = oneshot_rx;
+
+        tokio::select! {
+            _ = link_task => {}
+            _ = oneshot_task => {}
+        }
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    };
+
+    let task = tokio::spawn(task);
+
+    (task, oneshot_tx)
+}
+
 pub async fn link_oneshot_channels<T: Send + Sync>(
     rx: oneshot::Receiver<T>,
     tx: oneshot::Sender<T>,

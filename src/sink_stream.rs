@@ -1,12 +1,10 @@
-use super::channel_utils::{branch_oneshot_channels, ChannelType};
+use super::channel_utils::{branch_oneshot_channels, link_thingbuf_channels, ChannelType};
 use std::marker::PhantomData;
 use tokio::{sync::oneshot, task::JoinHandle};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 use thingbuf::mpsc::{Receiver as ThingbufReceiver, Sender as ThingbufSender};
-
-use super::channel_utils::link_thingbuf_channels;
 
 //TODO when stable rust: trait ChannelType = Send + Sync + Default + 'static;
 impl<T: Send + Sync + Clone + Default + 'static> ChannelType for T {}
@@ -190,41 +188,45 @@ impl<
         user_data: LinkWrapper<InputType, OutputType, CommunicationType, Link1, Link2>,
         rx: ThingbufReceiver<InputType>,
         tx: ThingbufSender<OutputType>,
-        oneshot: oneshot::Receiver<()>,
+        deadline_oneshot_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
         let (link1_join_handle, link1_tx, link1_rx, lhs_oneshot_tx) = user_data.link1.start().await;
         let (link2_join_handle, link2_tx, link2_rx, rhs_oneshot_tx) = user_data.link2.start().await;
 
+        use super::channel_utils::spawn_link_thingbuf_channels_oneshot;
         use tokio::spawn;
 
         let branch_channels = spawn(branch_oneshot_channels(
-            oneshot,
+            deadline_oneshot_rx,
             vec![lhs_oneshot_tx, rhs_oneshot_tx],
         ));
 
-        let link_in = spawn(link_thingbuf_channels(rx, link1_tx));
-        let link_out = spawn(link_thingbuf_channels(link2_rx, tx));
+        let mut oneshots = Vec::new();
+
+        let (link_in, oneshot_tx) = spawn_link_thingbuf_channels_oneshot(rx, link1_tx).await;
+        oneshots.push(oneshot_tx);
+
+        let (link_out, oneshot_tx) = spawn_link_thingbuf_channels_oneshot(link2_rx, tx).await;
+        oneshots.push(oneshot_tx);
 
         let link_internal = spawn(link_thingbuf_channels(link1_rx, link2_tx));
 
-        let res = tokio::try_join!(
-            link1_join_handle,
-            link2_join_handle,
-            branch_channels,
-            link_in,
-            link_out,
-            link_internal
+        let res = tokio::select!(
+            res = link1_join_handle => { res },
+            res = link2_join_handle => { res },
+            res = branch_channels => { res },
+            res = link_in => { res },
+            res = link_out => { res },
+            res = link_internal => { res },
         );
 
+        oneshots.into_iter().for_each(|oneshot| {
+            let _ = oneshot.send(());
+        });
+
         match res {
-            Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
-            _ => {
-                eprint!("LinkWrapperWorker failed");
-                Err(
-                    std::io::Error::new(std::io::ErrorKind::Other, "LinkWrapperWorker failed")
-                        .into(),
-                )
-            }
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.into()),
         }
     }
 }
