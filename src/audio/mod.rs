@@ -8,15 +8,18 @@ pub enum Layout {
 #[derive(Debug, Clone)]
 pub enum BitRate {
     Br128,
-    Br192,
-    Br256,
-    Br320,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq)]
 pub struct Mulaw {
     pub data: Option<Box<[u8]>>,
     pub sample_rate: u32,
+}
+
+impl PartialEq for Mulaw {
+    fn eq(&self, other: &Self) -> bool {
+        self.sample_rate == other.sample_rate
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,9 +34,9 @@ pub struct Mp3 {
     pub bit_rate: BitRate,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioData {
     Mulaw(Mulaw),
-    PCM(Layout),
-    MP3(Mp3),
+    //    PCM(Layout),
+    //    MP3(Mp3),
 }

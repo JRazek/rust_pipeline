@@ -6,13 +6,6 @@ use thingbuf::mpsc as thingbuf_mpsc;
 
 pub trait ChannelType: Send + Sync + Clone + Default + 'static {}
 
-pub trait StreamPad<T: ChannelType>: Send + Sync + Clone + 'static {
-    fn get_tx(&self) -> thingbuf_mpsc::Sender<T>;
-}
-
-pub trait SinkPad<T: ChannelType>: Send + Sync + 'static {
-    fn connect(self, pad: impl StreamPad<T>) -> Result<()>;
-}
 
 pub async fn branch_oneshot_channels<T: ChannelType + std::fmt::Debug>(
     input_rx: oneshot::Receiver<T>,
