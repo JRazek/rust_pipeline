@@ -1,9 +1,11 @@
 pub mod mpsc {
     use std::future::Future;
 
+    use std::pin::Pin;
+
+    #[async_trait::async_trait]
     pub trait Receiver<I>: Send + Sync {
-        type Item;
-        fn recv(&mut self) -> Box<dyn Future<Output = Option<I>> + Sync + Send + Unpin>;
+        async fn recv(&mut self) -> Option<I>;
     }
 
     #[derive(Debug)]
@@ -17,21 +19,8 @@ pub mod mpsc {
 
     impl std::error::Error for SendError<()> {}
 
+    #[async_trait::async_trait]
     pub trait Sender<I>: Send + Sync {
-        type Item;
-        fn send(
-            &self,
-            item: I,
-        ) -> Box<dyn Future<Output = Result<(), SendError<I>>> + Sync + Send + Unpin>;
-    }
-}
-
-pub mod oneshot {
-    use std::future::Future;
-
-    pub trait Receiver<I, E>: Future<Output = Result<I, E>> + Send + Sync + Unpin {}
-
-    pub trait Sender<I, E>: Send + Sync + Unpin {
-        fn send(self, item: I) -> Box<dyn Future<Output = Result<I, E>> + Send + Sync + Unpin>;
+        async fn send(&self, item: I) -> Result<(), SendError<I>>;
     }
 }
