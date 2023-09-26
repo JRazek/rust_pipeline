@@ -1,6 +1,7 @@
-use super::audio::AudioData;
+use super::audio::AudioFormat;
+use super::tags::Empty;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaggedData {
-    Audio(AudioData),
+#[derive(Debug)]
+pub enum Format<S = Empty> {
+    Audio(AudioFormat<S>),
 }
