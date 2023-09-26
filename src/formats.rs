@@ -1,7 +1,8 @@
-use super::audio::AudioFormat;
 use super::tags::Empty;
 
-#[derive(Debug)]
+use super::audio::AudioFormat;
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Format<S = Empty> {
     Audio(AudioFormat<S>),
 }

@@ -3,15 +3,15 @@ use crate::tags::Tag;
 pub mod pcm {
     use super::*;
 
-    #[derive(Debug, Default, Clone)]
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
     pub struct S16LE;
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum Layout<S> {
         S16LE(Tag<S16LE, Box<[u16]>, S>),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Pcm<T> {
         pub layout: Layout<T>,
         pub sample_rate: u32,
@@ -23,7 +23,7 @@ pub enum BitRate {
     Br128,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Mulaw {
     pub sample_rate: u32,
 }
@@ -33,7 +33,7 @@ pub struct Mp3 {
     pub bit_rate: BitRate,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AudioFormat<T> {
     Mulaw(Mulaw),
     PCM(pcm::Pcm<T>),
