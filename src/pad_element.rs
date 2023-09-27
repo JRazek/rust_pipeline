@@ -1,8 +1,9 @@
 use crate::errors::LinkError;
 use crate::formats::{MediaData, MediaFormat};
+use crate::pads::FormatNegotiator;
 
 use super::channel_traits::mpsc::{Receiver, Sender};
-use super::pads::{negotiate_formats, NegotiationPad};
+use super::pads::{negotiate_formats, FormatProvider};
 
 fn link(
     stream_pad: impl StreamPad,
@@ -17,8 +18,8 @@ fn link(
 
     match format {
         Some(format) => {
-            let mut stream_pad = stream_pad.get_tx(&format)?;
-            let sink_pad = sink_pad.get_rx(&format)?;
+            let mut stream_pad = stream_pad.get_rx(&format)?;
+            let sink_pad = sink_pad.get_tx(&format)?;
 
             let task = async move {
                 while let Some(data) = stream_pad.recv().await {
@@ -37,16 +38,16 @@ fn link(
     }
 }
 
-pub trait StreamPad: Sized + NegotiationPad {
+pub trait StreamPad: Sized + FormatProvider {
     type Receiver: Receiver<MediaData>;
 
-    fn get_tx(self, format: &MediaFormat) -> Result<Self::Receiver, LinkError>;
+    fn get_rx(self, format: &MediaFormat) -> Result<Self::Receiver, LinkError>;
 }
 
-pub trait SinkPad: Sized + NegotiationPad {
+pub trait SinkPad: Sized + FormatNegotiator {
     type Sender: Sender<MediaData>;
 
-    fn get_rx(self, format: &MediaFormat) -> Result<Self::Sender, LinkError>;
+    fn get_tx(self, format: &MediaFormat) -> Result<Self::Sender, LinkError>;
 }
 
 pub mod builder {
@@ -65,7 +66,7 @@ pub mod builder {
             }
         }
 
-        pub fn set_sink<T: SinkPad + 'a>(self, sink: T) -> Result<(), LinkError> {
+        pub fn build_with_sink<T: SinkPad + 'a>(self, sink: T) -> Result<(), LinkError> {
             let future = link(self.stream, sink)?;
             self.async_executor.spawn(future).detach();
 
