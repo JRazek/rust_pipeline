@@ -1,7 +1,7 @@
 use pipeline::audio::pcm::{Layout, Pcm};
 use pipeline::audio::AudioFormat;
 use pipeline::pad_element::{SinkPad, StreamPad};
-use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaFormat};
+use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaData, MediaFormat};
 use pipeline::tags::Tag;
 
 use tokio::sync::mpsc as thingbuf_mpsc;
@@ -52,16 +52,15 @@ fn frequencies_to_s16_pcm(freq: &Vec<u32>) -> Vec<pads::MediaFormat> {
 
 struct PassthroughSinkPad {
     tx: Sender,
-    format_tx: tokio_oneshot::Sender<MediaFormat>,
 }
 
-impl FormatNegotiator for PassthroughSinkPad {
+impl FormatNegotiator<MediaFormat> for PassthroughSinkPad {
     fn matches(&self, _: &pads::MediaFormat) -> bool {
         true
     }
 }
 
-impl SinkPad for PassthroughSinkPad {
+impl SinkPad<MediaData, MediaFormat> for PassthroughSinkPad {
     type Sender = Sender;
 
     fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
@@ -72,21 +71,17 @@ impl SinkPad for PassthroughSinkPad {
 struct PassthroughStreamPad {
     supported_frequencies: Vec<u32>,
     rx: Receiver,
-    format_rx: tokio_oneshot::Receiver<MediaFormat>,
 }
 
-impl StreamPad for PassthroughStreamPad {
+impl StreamPad<MediaData, MediaFormat> for PassthroughStreamPad {
     type Receiver = Receiver;
 
-    fn get_rx(
-        self,
-        format: &pads::MediaFormat,
-    ) -> Result<Self::Receiver, pipeline::errors::LinkError> {
+    fn get_rx(self, _: &pads::MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
         Ok(self.rx)
     }
 }
 
-impl FormatProvider for PassthroughStreamPad {
+impl FormatProvider<MediaFormat> for PassthroughStreamPad {
     fn formats(&self) -> Vec<pads::MediaFormat> {
         frequencies_to_s16_pcm(&self.supported_frequencies)
     }
@@ -98,20 +93,14 @@ fn spawn_passthrough_task(
     let (in_tx, in_rx) = thingbuf_mpsc::channel(1024);
     let (out_tx, out_rx) = thingbuf_mpsc::channel(1024);
 
-    let (format_tx, format_rx) = tokio_oneshot::channel();
-
     async_executor
         .spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)))
         .detach();
 
     (
-        PassthroughSinkPad {
-            tx: Sender(in_tx),
-            format_tx,
-        },
+        PassthroughSinkPad { tx: Sender(in_tx) },
         PassthroughStreamPad {
             supported_frequencies: vec![8000],
-            format_rx,
             rx: Receiver(out_rx),
         },
     )
@@ -138,13 +127,13 @@ struct AudioProducerStreamPad {
     rx: Receiver,
 }
 
-impl FormatProvider for AudioProducerStreamPad {
+impl FormatProvider<MediaFormat> for AudioProducerStreamPad {
     fn formats(&self) -> Vec<pads::MediaFormat> {
         frequencies_to_s16_pcm(&vec![8000])
     }
 }
 
-impl StreamPad for AudioProducerStreamPad {
+impl StreamPad<MediaData, MediaFormat> for AudioProducerStreamPad {
     type Receiver = Receiver;
 
     fn get_rx(
@@ -228,7 +217,7 @@ fn consumer_task(async_executor: &async_executor::Executor) -> ConsumerPad {
     ConsumerPad { tx: Sender(tx) }
 }
 
-impl FormatNegotiator for ConsumerPad {
+impl FormatNegotiator<MediaFormat> for ConsumerPad {
     fn matches(&self, format: &pads::MediaFormat) -> bool {
         match format {
             pads::MediaFormat::Audio(AudioFormat::PCM(Pcm {
@@ -240,7 +229,7 @@ impl FormatNegotiator for ConsumerPad {
     }
 }
 
-impl SinkPad for ConsumerPad {
+impl SinkPad<MediaData, MediaFormat> for ConsumerPad {
     type Sender = Sender;
 
     fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {

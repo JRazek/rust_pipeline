@@ -5,9 +5,9 @@ use crate::pads::FormatNegotiator;
 use super::channel_traits::mpsc::{Receiver, Sender};
 use super::pads::{negotiate_formats, FormatProvider};
 
-fn link(
-    stream_pad: impl StreamPad,
-    sink_pad: impl SinkPad,
+fn link<D: Send, F: Send>(
+    stream_pad: impl StreamPad<D, F>,
+    sink_pad: impl SinkPad<D, F>,
 ) -> Result<impl futures::Future<Output = Result<(), LinkError>>, LinkError> {
     let negotiated = negotiate_formats(&stream_pad, &sink_pad);
 
@@ -38,35 +38,39 @@ fn link(
     }
 }
 
-pub trait StreamPad: Sized + FormatProvider {
-    type Receiver: Receiver<MediaData>;
+pub trait StreamPad<D, F>: Sized + FormatProvider<F> {
+    type Receiver: Receiver<D>;
 
-    fn get_rx(self, format: &MediaFormat) -> Result<Self::Receiver, LinkError>;
+    fn get_rx(self, format: &F) -> Result<Self::Receiver, LinkError>;
 }
 
-pub trait SinkPad: Sized + FormatNegotiator {
-    type Sender: Sender<MediaData>;
+pub trait SinkPad<D, F>: Sized + FormatNegotiator<F> {
+    type Sender: Sender<D>;
 
-    fn get_tx(self, format: &MediaFormat) -> Result<Self::Sender, LinkError>;
+    fn get_tx(self, format: &F) -> Result<Self::Sender, LinkError>;
 }
 
 pub mod builder {
     use super::*;
 
-    pub struct StreamPadBuilder<'a, S: StreamPad> {
+    pub struct StreamPadBuilder<'a, S: StreamPad<D, F>, D, F> {
         stream: S,
         async_executor: async_executor::Executor<'a>,
+        data_phantom: std::marker::PhantomData<D>,
+        format_phantom: std::marker::PhantomData<F>,
     }
 
-    impl<'a, S: StreamPad + 'a> StreamPadBuilder<'a, S> {
+    impl<'a, S: StreamPad<D, F> + 'a, D: Send + 'a, F: Send + 'a> StreamPadBuilder<'a, S, D, F> {
         pub fn with_stream(sink: S) -> Self {
             Self {
                 stream: sink,
                 async_executor: async_executor::Executor::new(),
+                data_phantom: std::marker::PhantomData,
+                format_phantom: std::marker::PhantomData,
             }
         }
 
-        pub fn build_with_sink<T: SinkPad + 'a>(self, sink: T) -> Result<(), LinkError> {
+        pub fn build_with_sink<T: SinkPad<D, F> + 'a>(self, sink: T) -> Result<(), LinkError> {
             let future = link(self.stream, sink)?;
             self.async_executor.spawn(future).detach();
 
@@ -81,10 +85,10 @@ pub mod builder {
          *      ^^^^^^Link^^^^^^^^
          *
          */
-        pub fn set_link<Sink: SinkPad + 'a, Stream: StreamPad + 'a>(
+        pub fn set_link<Sink: SinkPad<D, F> + 'a, Stream: StreamPad<D, F> + 'a>(
             self,
             link_tup: (Sink, Stream),
-        ) -> Result<StreamPadBuilder<'a, Stream>, LinkError> {
+        ) -> Result<StreamPadBuilder<'a, Stream, D, F>, LinkError> {
             let (sink, stream) = link_tup;
 
             let link = link(self.stream, sink)?;
@@ -94,6 +98,8 @@ pub mod builder {
             Ok(StreamPadBuilder {
                 stream,
                 async_executor: self.async_executor,
+                data_phantom: std::marker::PhantomData,
+                format_phantom: std::marker::PhantomData,
             })
         }
     }
