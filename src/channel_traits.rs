@@ -1,8 +1,4 @@
 pub mod mpsc {
-    use std::future::Future;
-
-    use std::pin::Pin;
-
     #[async_trait::async_trait]
     pub trait Receiver<I>: Send + Sync {
         async fn recv(&mut self) -> Option<I>;
