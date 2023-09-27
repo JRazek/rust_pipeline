@@ -2,16 +2,13 @@ use crate::errors::LinkError;
 use crate::formats::{MediaData, MediaFormat};
 
 use super::channel_traits::mpsc::{Receiver, Sender};
-use super::pads::{negotiate_formats, NegotiableSinkPad, NegotiableStreamPad};
+use super::pads::{negotiate_formats, NegotiationPad};
 
 fn link(
     stream_pad: impl StreamPad,
     sink_pad: impl SinkPad,
 ) -> Result<impl futures::Future<Output = Result<(), LinkError>>, LinkError> {
-    let stream_negotiation_pad = stream_pad.get_negotiation_pad();
-    let sink_negotiation_pad = sink_pad.get_negotiation_pad();
-
-    let negotiated = negotiate_formats(&stream_negotiation_pad, &sink_negotiation_pad);
+    let negotiated = negotiate_formats(&stream_pad, &sink_pad);
 
     let format = match &negotiated[..] {
         [format, ..] => Some(format),
@@ -40,19 +37,15 @@ fn link(
     }
 }
 
-pub trait StreamPad: Sized {
+pub trait StreamPad: Sized + NegotiationPad {
     type Receiver: Receiver<MediaData>;
-    type NegotiationStreamPad: NegotiableStreamPad<Self::Receiver>;
 
-    fn get_negotiation_pad(&self) -> Self::NegotiationStreamPad;
     fn get_tx(self, format: &MediaFormat) -> Result<Self::Receiver, LinkError>;
 }
 
-pub trait SinkPad: Sized {
+pub trait SinkPad: Sized + NegotiationPad {
     type Sender: Sender<MediaData>;
-    type NegotiationSinkPad: NegotiableSinkPad<Self::Sender>;
 
-    fn get_negotiation_pad(&self) -> Self::NegotiationSinkPad;
     fn get_rx(self, format: &MediaFormat) -> Result<Self::Sender, LinkError>;
 }
 

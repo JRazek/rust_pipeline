@@ -1,24 +1,27 @@
-use crate::formats::MediaData;
-
-use super::channel_traits::mpsc;
-use super::errors::LinkError;
-
+pub use super::formats::MediaData;
 pub use super::formats::MediaFormat;
 
-pub trait NegotiableStreamPad<R: mpsc::Receiver<MediaData>>: Send + Sync {
-    fn matches_format(&self) -> Vec<MediaFormat>;
+pub trait NegotiationPad: Send + Sync {
+    fn formats(&self) -> Vec<MediaFormat>;
 }
 
-pub trait NegotiableSinkPad<S: mpsc::Sender<MediaData>>: Send + Sync + Sized {
-    fn matches_format(&self) -> Vec<MediaFormat>;
+pub trait Negotiator: Fn(&MediaFormat) -> bool {}
+impl Negotiator for fn(&MediaFormat) -> bool {}
+
+fn test(format: &MediaFormat) -> bool {
+    true
 }
 
-pub(super) fn negotiate_formats<R: mpsc::Receiver<MediaData>, S: mpsc::Sender<MediaData>>(
-    stream: &impl NegotiableStreamPad<R>,
-    sink: &impl NegotiableSinkPad<S>,
+fn test_negotiator(format: &MediaFormat, negotiator: &impl Negotiator) {
+    negotiator(format);
+}
+
+pub(super) fn negotiate_formats(
+    stream: &impl NegotiationPad,
+    sink: &impl NegotiationPad,
 ) -> Vec<MediaFormat> {
-    let stream_format = stream.matches_format();
-    let sink_formats = sink.matches_format();
+    let stream_format = stream.formats();
+    let sink_formats = sink.formats();
 
     stream_format
         .into_iter()

@@ -8,7 +8,7 @@ pub mod pcm {
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum Layout<S> {
-        S16LE(Tag<S16LE, Box<[u16]>, S>),
+        S16LE(Tag<S16LE, Box<[i16]>, S>),
     }
 
     #[derive(Debug, PartialEq, Eq)]
