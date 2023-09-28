@@ -70,28 +70,13 @@ impl Clone for AudioFormat<Empty> {
     }
 }
 
-pub struct Sender(pub tokio_mpsc::Sender<MediaData>);
-
-impl Drop for Sender {
-    fn drop(&mut self) {
-        println!("Dropping sender");
-    }
-}
-
-pub struct Receiver(pub tokio_mpsc::Receiver<MediaData>);
-
-impl Drop for Receiver {
-    fn drop(&mut self) {
-        println!("Dropping receiver");
-    }
-}
+type Sender = tokio_mpsc::Sender<MediaData>;
+type Receiver = tokio_mpsc::Receiver<MediaData>;
 
 #[async_trait::async_trait]
 impl pipeline_mpsc::Sender<MediaData> for Sender {
     async fn send(&self, data: MediaData) -> Result<(), pipeline_mpsc::SendError<MediaData>> {
-        let tx = &self.0;
-
-        tx.send(data)
+        self.send(data)
             .await
             .map_err(|tokio_mpsc::error::SendError(data)| pipeline_mpsc::SendError(data))
     }
@@ -100,9 +85,7 @@ impl pipeline_mpsc::Sender<MediaData> for Sender {
 #[async_trait::async_trait]
 impl pipeline_mpsc::Receiver<MediaData> for Receiver {
     async fn recv(&mut self) -> Option<MediaData> {
-        let rx = &mut self.0;
-
-        rx.recv().await
+        self.recv().await
     }
 }
 
@@ -180,7 +163,7 @@ fn audio_producer(rt: &tokio::runtime::Runtime) -> AudioProducerStreamPad {
 
     rt.spawn(task);
 
-    AudioProducerStreamPad { rx: Receiver(rx) }
+    AudioProducerStreamPad { rx }
 }
 
 struct PassthroughSinkPad {
@@ -248,15 +231,12 @@ fn spawn_passthrough_task(rt: &tokio::runtime::Runtime) -> (Sender, Receiver) {
     let (in_tx, in_rx) = tokio_mpsc::channel(1024);
     let (out_tx, out_rx) = tokio_mpsc::channel(1024);
 
-    rt.spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)));
+    rt.spawn(passthrough_task(in_rx, out_tx));
 
-    (Sender(in_tx), Receiver(out_rx))
+    (in_tx, out_rx)
 }
 
 async fn passthrough_task(mut rx: Receiver, tx: Sender) {
-    let rx = &mut rx.0;
-    let tx = &tx.0;
-
     while let Some(data) = rx.recv().await {
         tx.send(data).await.unwrap();
     }
@@ -299,7 +279,7 @@ fn consumer_task(rt: &tokio::runtime::Runtime) -> ConsumerPad {
 
     rt.spawn(task);
 
-    ConsumerPad { tx: Sender(tx) }
+    ConsumerPad { tx }
 }
 
 impl FormatNegotiator<MediaFormat> for ConsumerPad {
