@@ -9,7 +9,6 @@
 
 # Don't ignore specific files
 !.gitignore
-!Cargo.lock
 !Cargo.toml
 !README.md
 
