@@ -3,6 +3,8 @@ use crate::pad::*;
 
 use super::manual::Builder as ManualBuilder;
 
+use super::manual::CallbackWithFuture;
+
 pub struct Builder<S, D, F>
 where
     S: StreamPad<D, F>,
@@ -27,7 +29,7 @@ where
         }
     }
 
-    pub fn build_with_sink<T>(self, sink: T, rt: &tokio::runtime::Runtime) -> Result<(), LinkError>
+    pub fn build_with_sink<T>(self, sink: T, f: &impl CallbackWithFuture) -> Result<(), LinkError>
     where
         T: SinkPad<Dtx, Ftx> + FormatNegotiator<Ftx>,
     {
@@ -37,7 +39,7 @@ where
             .find(|&format| sink.matches(format))
             .ok_or(LinkError::InitialFormatMismatch)?;
 
-        self.manual_builder.build_with_sink(sink, format, rt)
+        self.manual_builder.build_with_sink(sink, format, f)
     }
 }
 
@@ -50,7 +52,7 @@ where
     pub fn set_link<LinkT, Dtx, Ftx>(
         self,
         link_element: LinkT,
-        rt: &tokio::runtime::Runtime,
+        f: &impl CallbackWithFuture,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
         LinkT: LinkElement<Drx, Frx, Dtx, Ftx> + FormatNegotiator<Frx>,
@@ -64,7 +66,7 @@ where
             .find(|&format| link_element.matches(format))
             .ok_or(LinkError::InitialFormatMismatch)?;
 
-        let manual_builder = self.manual_builder.set_link(link_element, format, rt)?;
+        let manual_builder = self.manual_builder.set_link(link_element, format, f)?;
 
         let formats = manual_builder.stream.formats();
 

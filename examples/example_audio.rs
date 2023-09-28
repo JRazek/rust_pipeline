@@ -316,10 +316,14 @@ fn main() {
 
     let consumer_pad = consumer_task(&rt);
 
+    let cb = |future| {
+        rt.spawn(future);
+    };
+
     PipelineBuilder::with_stream(producer_stream_pad)
-        .set_link(passthrough_link, &rt)
+        .set_link(passthrough_link, &cb)
         .unwrap()
-        .build_with_sink(consumer_pad, &rt)
+        .build_with_sink(consumer_pad, &cb)
         .unwrap();
 
     rt.block_on(async {

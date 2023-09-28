@@ -96,7 +96,7 @@ negotiator::Builder builder also requires LinkElement to implement FormatNegotia
 Once the traits are implemented, connecting the traits is quite straight-forward.
 ```rust
 fn main() {
-    use pipeline::pipeline_builder::negotiator::Builder;
+    use pipeline::pipeline_builder::negotiator::Builder as PipelineBuilder;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -109,10 +109,14 @@ fn main() {
 
     let consumer_pad = consumer_task(&rt);
 
-    negotiator::Builder::with_stream(producer_stream_pad)
-        .set_link(passthrough_link, &rt)
+    let cb = |future| {
+        rt.spawn(future);
+    };
+
+    PipelineBuilder::with_stream(producer_stream_pad)
+        .set_link(passthrough_link, &cb)
         .unwrap()
-        .build_with_sink(consumer_pad, &rt)
+        .build_with_sink(consumer_pad, &cb)
         .unwrap();
 
     rt.block_on(async {

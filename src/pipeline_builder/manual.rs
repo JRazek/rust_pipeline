@@ -1,7 +1,22 @@
 use crate::errors::LinkError;
 use crate::pad::*;
 
-use super::*;
+use std::pin::Pin;
+
+type PinnedFutureBox = Pin<Box<dyn futures::Future<Output = Result<(), LinkError>> + Send>>;
+
+pub trait CallbackWithFuture {
+    fn call(&self, future: PinnedFutureBox);
+}
+
+impl<Function> CallbackWithFuture for Function
+where
+    Function: Fn(PinnedFutureBox) + Send,
+{
+    fn call(&self, future: PinnedFutureBox) {
+        self(future)
+    }
+}
 
 pub struct Builder<Stream, Dtx, Ftx>
 where
@@ -12,7 +27,7 @@ where
     format_phantom: std::marker::PhantomData<Ftx>,
 }
 
-impl<'a, Stream, Data, Format> Builder<Stream, Data, Format>
+impl<Stream, Data, Format> Builder<Stream, Data, Format>
 where
     Stream: StreamPad<Data, Format>,
     Data: Send + 'static,
@@ -30,11 +45,11 @@ where
         self,
         sink: T,
         format: &Format,
-        rt: &tokio::runtime::Runtime,
+        f: &impl CallbackWithFuture,
     ) -> Result<(), LinkError> {
         let future = link(self.stream, sink, format)?;
 
-        rt.spawn(wrap_panic_on_err(future));
+        f.call(Box::pin(future));
 
         Ok(())
     }
@@ -43,7 +58,7 @@ where
 /*
  * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
  */
-impl<'a, S, Drx, Frx> Builder<S, Drx, Frx>
+impl<S, Drx, Frx> Builder<S, Drx, Frx>
 where
     S: StreamPad<Drx, Frx> + 'static,
     Drx: Send + 'static,
@@ -61,7 +76,7 @@ where
         self,
         link_element: LinkT,
         format: &Frx,
-        rt: &tokio::runtime::Runtime,
+        f: &impl CallbackWithFuture,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
         LinkT: LinkElement<Drx, Frx, Dtx, Ftx>,
@@ -73,7 +88,7 @@ where
 
         let future = link(self.stream, link_sink, format)?;
 
-        rt.spawn(wrap_panic_on_err(future));
+        f.call(Box::pin(future));
 
         Ok(Builder {
             stream: link_stream,
@@ -82,7 +97,3 @@ where
         })
     }
 }
-
-//fn test<I, E, F: futures::Future<Output = Result<I, E>>>(
-//) -> impl FnOnce(F) -> () + Send + 'static {
-//}
