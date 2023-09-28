@@ -1,7 +1,7 @@
 use pipeline::audio::pcm::{Layout, Pcm};
 use pipeline::audio::AudioFormat;
 use pipeline::errors::LinkError;
-use pipeline::pad_element::{LinkElement, SinkPad, StreamPad};
+use pipeline::pads::{LinkElement, SinkPad, StreamPad};
 use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaData, MediaFormat};
 use pipeline::tags::Tag;
 
