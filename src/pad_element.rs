@@ -1,5 +1,4 @@
 use crate::errors::LinkError;
-use crate::formats::{MediaData, MediaFormat};
 use crate::pads::FormatNegotiator;
 
 use super::channel_traits::mpsc::{Receiver, Sender};
@@ -34,6 +33,7 @@ fn link<D: Send, F: Send>(
 
             Ok(task)
         }
+
         None => Err(LinkError::InitialFormatMismatch),
     }
 }
@@ -50,29 +50,40 @@ pub trait SinkPad<D, F>: Sized + FormatNegotiator<F> {
     fn get_tx(self, format: &F) -> Result<Self::Sender, LinkError>;
 }
 
+async fn wrap_panic_on_err<T>(result: impl futures::Future<Output = Result<T, LinkError>>) {
+    if let Err(err) = result.await {
+        panic!("Link error: {:?}", err);
+    }
+}
+
 pub mod builder {
     use super::*;
 
-    pub struct StreamPadBuilder<'a, S: StreamPad<D, F>, D, F> {
+    pub struct StreamPadBuilder<S: StreamPad<D, F> + 'static, D, F> {
         stream: S,
-        async_executor: async_executor::Executor<'a>,
         data_phantom: std::marker::PhantomData<D>,
         format_phantom: std::marker::PhantomData<F>,
     }
 
-    impl<'a, S: StreamPad<D, F> + 'a, D: Send + 'a, F: Send + 'a> StreamPadBuilder<'a, S, D, F> {
+    impl<'a, S: StreamPad<D, F> + 'static, D: Send + 'static, F: Send + 'static>
+        StreamPadBuilder<S, D, F>
+    {
         pub fn with_stream(sink: S) -> Self {
             Self {
                 stream: sink,
-                async_executor: async_executor::Executor::new(),
                 data_phantom: std::marker::PhantomData,
                 format_phantom: std::marker::PhantomData,
             }
         }
 
-        pub fn build_with_sink<T: SinkPad<D, F> + 'a>(self, sink: T) -> Result<(), LinkError> {
+        pub fn build_with_sink<T: SinkPad<D, F> + 'static>(
+            self,
+            rt: &tokio::runtime::Runtime,
+            sink: T,
+        ) -> Result<(), LinkError> {
             let future = link(self.stream, sink)?;
-            self.async_executor.spawn(future).detach();
+
+            rt.spawn(wrap_panic_on_err(future));
 
             Ok(())
         }
@@ -85,19 +96,19 @@ pub mod builder {
          *      ^^^^^^Link^^^^^^^^
          *
          */
-        pub fn set_link<Sink: SinkPad<D, F> + 'a, Stream: StreamPad<D, F> + 'a>(
+        pub fn set_link<Sink: SinkPad<D, F> + 'static, Stream: StreamPad<D, F> + 'static>(
             self,
+            rt: &tokio::runtime::Runtime,
             link_tup: (Sink, Stream),
-        ) -> Result<StreamPadBuilder<'a, Stream, D, F>, LinkError> {
+        ) -> Result<StreamPadBuilder<Stream, D, F>, LinkError> {
             let (sink, stream) = link_tup;
 
-            let link = link(self.stream, sink)?;
+            let future = link(self.stream, sink)?;
 
-            self.async_executor.spawn(link).detach();
+            rt.spawn(wrap_panic_on_err(future));
 
             Ok(StreamPadBuilder {
                 stream,
-                async_executor: self.async_executor,
                 data_phantom: std::marker::PhantomData,
                 format_phantom: std::marker::PhantomData,
             })

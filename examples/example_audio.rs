@@ -4,15 +4,25 @@ use pipeline::pad_element::{SinkPad, StreamPad};
 use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaData, MediaFormat};
 use pipeline::tags::Tag;
 
-use tokio::sync::mpsc as thingbuf_mpsc;
-use tokio::sync::oneshot as tokio_oneshot;
+use tokio::sync::mpsc as tokio_mpsc;
 
 use pipeline::channel_traits::mpsc as pipeline_mpsc;
 
-#[derive(Clone)]
-pub struct Sender(pub thingbuf_mpsc::Sender<pads::MediaData>);
+pub struct Sender(pub tokio_mpsc::Sender<pads::MediaData>);
 
-pub struct Receiver(pub thingbuf_mpsc::Receiver<pads::MediaData>);
+impl Drop for Sender {
+    fn drop(&mut self) {
+        println!("Dropping sender");
+    }
+}
+
+pub struct Receiver(pub tokio_mpsc::Receiver<pads::MediaData>);
+
+impl Drop for Receiver {
+    fn drop(&mut self) {
+        println!("Dropping receiver");
+    }
+}
 
 #[async_trait::async_trait]
 impl pipeline_mpsc::Sender<pads::MediaData> for Sender {
@@ -24,7 +34,7 @@ impl pipeline_mpsc::Sender<pads::MediaData> for Sender {
 
         tx.send(data)
             .await
-            .map_err(|thingbuf_mpsc::error::SendError(data)| pipeline_mpsc::SendError(data))
+            .map_err(|tokio_mpsc::error::SendError(data)| pipeline_mpsc::SendError(data))
     }
 }
 
@@ -88,19 +98,17 @@ impl FormatProvider<MediaFormat> for PassthroughStreamPad {
 }
 
 fn spawn_passthrough_task(
-    async_executor: &async_executor::Executor,
+    rt: &tokio::runtime::Runtime,
 ) -> (PassthroughSinkPad, PassthroughStreamPad) {
-    let (in_tx, in_rx) = thingbuf_mpsc::channel(1024);
-    let (out_tx, out_rx) = thingbuf_mpsc::channel(1024);
+    let (in_tx, in_rx) = tokio_mpsc::channel(1024);
+    let (out_tx, out_rx) = tokio_mpsc::channel(1024);
 
-    async_executor
-        .spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)))
-        .detach();
+    rt.spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)));
 
     (
         PassthroughSinkPad { tx: Sender(in_tx) },
         PassthroughStreamPad {
-            supported_frequencies: vec![8000],
+            supported_frequencies: vec![16000],
             rx: Receiver(out_rx),
         },
     )
@@ -113,12 +121,14 @@ async fn passthrough_task(mut rx: Receiver, tx: Sender) {
     while let Some(data) = rx.recv().await {
         tx.send(data).await.unwrap();
     }
+
+    eprintln!("passthrough task finished");
 }
 
 fn signal(time: std::time::Duration) -> i16 {
-    let time = time.as_millis() as f64;
+    let time = time.as_nanos() as f64;
 
-    let converted = (time.sin() * i16::MAX as f64) as i16;
+    let converted = (f64::sin(time * 0.001) * i16::MAX as f64) as i16;
 
     converted
 }
@@ -129,7 +139,7 @@ struct AudioProducerStreamPad {
 
 impl FormatProvider<MediaFormat> for AudioProducerStreamPad {
     fn formats(&self) -> Vec<pads::MediaFormat> {
-        frequencies_to_s16_pcm(&vec![8000])
+        frequencies_to_s16_pcm(&vec![16000])
     }
 }
 
@@ -143,7 +153,7 @@ impl StreamPad<MediaData, MediaFormat> for AudioProducerStreamPad {
         match &format {
             pads::MediaFormat::Audio(AudioFormat::PCM(Pcm {
                 layout: Layout::S16LE(_),
-                sample_rate: 8000,
+                sample_rate: 16000,
             })) => {
                 let rx = self.rx;
 
@@ -154,19 +164,19 @@ impl StreamPad<MediaData, MediaFormat> for AudioProducerStreamPad {
     }
 }
 
-fn audio_producer(async_executor: &async_executor::Executor) -> AudioProducerStreamPad {
-    const SAMPLE_RATE: u32 = 8000;
+fn audio_producer(rt: &tokio::runtime::Runtime) -> AudioProducerStreamPad {
+    const SAMPLE_RATE: u32 = 16000;
 
     let sample_duration =
-        std::time::Duration::from_millis((1. / SAMPLE_RATE as f64 * 1000.) as u64);
+        std::time::Duration::from_nanos((1. / SAMPLE_RATE as f64 * 1000_000.) as u64);
 
     let mut time = std::time::Duration::ZERO;
 
-    let (tx, rx) = thingbuf_mpsc::channel(1024);
+    let (tx, rx) = tokio_mpsc::channel(1024);
 
     let task = async move {
         loop {
-            let mut buffer = vec![0i16; 1024];
+            let mut buffer = vec![0i16; 16];
 
             for i in 0..buffer.len() {
                 buffer[i] = signal(time);
@@ -181,10 +191,13 @@ fn audio_producer(async_executor: &async_executor::Executor) -> AudioProducerStr
                 sample_rate: SAMPLE_RATE,
             }));
 
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
             tx.send(buffer).await.unwrap();
         }
     };
-    async_executor.spawn(task).detach();
+
+    rt.spawn(task);
 
     AudioProducerStreamPad { rx: Receiver(rx) }
 }
@@ -193,15 +206,15 @@ struct ConsumerPad {
     tx: Sender,
 }
 
-fn consumer_task(async_executor: &async_executor::Executor) -> ConsumerPad {
-    let (tx, mut rx) = thingbuf_mpsc::channel(1024);
+fn consumer_task(rt: &tokio::runtime::Runtime) -> ConsumerPad {
+    let (tx, mut rx) = tokio_mpsc::channel(1024);
 
     let task = async move {
         while let Some(data) = rx.recv().await {
             match &data {
                 pads::MediaData::Audio(AudioFormat::PCM(Pcm {
                     layout: Layout::S16LE(data),
-                    sample_rate: 8000,
+                    sample_rate: 16000,
                 })) => {
                     println!("Got audio data: {:?}", data);
                 }
@@ -210,9 +223,11 @@ fn consumer_task(async_executor: &async_executor::Executor) -> ConsumerPad {
                 }
             }
         }
+
+        eprintln!("consumer task finished");
     };
 
-    async_executor.spawn(task).detach();
+    rt.spawn(task);
 
     ConsumerPad { tx: Sender(tx) }
 }
@@ -222,7 +237,7 @@ impl FormatNegotiator<MediaFormat> for ConsumerPad {
         match format {
             pads::MediaFormat::Audio(AudioFormat::PCM(Pcm {
                 layout: Layout::S16LE(_),
-                sample_rate: 8000,
+                sample_rate: 16000,
             })) => true,
             _ => false,
         }
@@ -239,30 +254,25 @@ impl SinkPad<MediaData, MediaFormat> for ConsumerPad {
 
 fn main() {
     use pipeline::pad_element::builder::StreamPadBuilder;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    let async_executor = async_executor::Executor::new();
+    let producer_stream_pad = audio_producer(&rt);
 
-    let producer_stream_pad = audio_producer(&async_executor);
+    let passthrough_link = spawn_passthrough_task(&rt);
 
-    let passthrough_link = spawn_passthrough_task(&async_executor);
-
-    let consumer_pad = consumer_task(&async_executor);
+    let consumer_pad = consumer_task(&rt);
 
     StreamPadBuilder::with_stream(producer_stream_pad)
-        .set_link(passthrough_link)
+        .set_link(&rt, passthrough_link)
         .unwrap()
-        .build_with_sink(consumer_pad)
+        .build_with_sink(&rt, consumer_pad)
         .unwrap();
 
-    let runner = rt.spawn(async move {
-        loop {
-            async_executor.tick().await;
-        }
+    rt.block_on(async {
+        tokio::signal::ctrl_c().await.unwrap();
     });
-
-    rt.block_on(runner).unwrap();
 }
