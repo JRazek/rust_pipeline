@@ -23,21 +23,21 @@ pub fn link<D: Send + 'static, F: Send + 'static>(
     Ok(task)
 }
 
-pub trait FormatProvider<F>: Send + Sync {
+pub trait FormatProvider<F> {
     fn formats(&self) -> Vec<F>;
 }
 
-pub trait FormatNegotiator<F>: Send + Sync {
+pub trait FormatNegotiator<F> {
     fn matches(&self, format: &F) -> bool;
 }
 
-pub trait StreamPad<D, F>: Sized {
+pub trait StreamPad<D, F> {
     type Receiver: Receiver<D>;
 
     fn get_rx(self, rx_format: &F) -> Result<Self::Receiver, LinkError>;
 }
 
-pub trait SinkPad<D, F>: Sized {
+pub trait SinkPad<D, F> {
     type Sender: Sender<D>;
 
     fn get_tx(self, tx_format: &F) -> Result<Self::Sender, LinkError>;
@@ -45,7 +45,7 @@ pub trait SinkPad<D, F>: Sized {
 
 pub trait LinkElement<Drx, Frx, Dtx = Drx, Ftx = Frx> {
     type SinkPad: SinkPad<Drx, Frx>;
-    type StreamPad: StreamPad<Dtx, Ftx> + FormatProvider<Ftx>;
+    type StreamPad: StreamPad<Dtx, Ftx>;
 
     fn get_pads(self, rx_format: &Frx) -> Result<(Self::SinkPad, Self::StreamPad), LinkError>;
 }

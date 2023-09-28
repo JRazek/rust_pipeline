@@ -1,33 +1,24 @@
-use super::pad::*;
 use crate::errors::LinkError;
+use crate::pad::*;
 
-fn wrap_panic_on_err<T>(
-    result: impl futures::Future<Output = Result<T, LinkError>>,
-) -> impl futures::Future<Output = ()> {
-    async move {
-        if let Err(err) = result.await {
-            panic!("Link error: {:?}", err);
-        }
-    }
-}
+use super::manual::Builder as ManualBuilder;
 
-pub struct PipelineBuilder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
-    stream: Stream,
+pub struct Builder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
+    manual_builder: ManualBuilder<Stream, Dtx, Ftx>,
     formats: Vec<Ftx>,
-    data_phantom: std::marker::PhantomData<Dtx>,
-    format_phantom: std::marker::PhantomData<Ftx>,
 }
 
 impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send + 'static>
-    PipelineBuilder<Stream, D, F>
+    Builder<Stream, D, F>
 {
     pub fn with_stream(sink: Stream) -> Self {
         let formats = sink.formats();
+
+        let manual_builder = ManualBuilder::with_stream(sink);
+
         Self {
-            stream: sink,
             formats,
-            data_phantom: std::marker::PhantomData,
-            format_phantom: std::marker::PhantomData,
+            manual_builder,
         }
     }
 
@@ -42,11 +33,7 @@ impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send
             .find(|&format| sink.matches(format))
             .ok_or(LinkError::InitialFormatMismatch)?;
 
-        let future = link(self.stream, sink, format)?;
-
-        rt.spawn(wrap_panic_on_err(future));
-
-        Ok(())
+        self.manual_builder.build_with_sink(sink, format, rt)
     }
 }
 
@@ -54,7 +41,7 @@ impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send
  * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
  */
 impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'static>
-    PipelineBuilder<S, Drx, Frx>
+    Builder<S, Drx, Frx>
 {
     /*
      * Note that (Sink, Stream) order is reversed here.
@@ -72,26 +59,23 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
         self,
         link_element: LinkT,
         rt: &tokio::runtime::Runtime,
-    ) -> Result<PipelineBuilder<LinkT::StreamPad, Dtx, Ftx>, LinkError> {
+    ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
+    where
+        LinkT::StreamPad: FormatProvider<Ftx>,
+    {
         let format = self
             .formats
             .iter()
             .find(|&format| link_element.matches(format))
             .ok_or(LinkError::InitialFormatMismatch)?;
 
-        let (link_sink, link_stream) = link_element.get_pads(format)?;
+        let manual_builder = self.manual_builder.set_link(link_element, format, rt)?;
 
-        let future = link(self.stream, link_sink, format)?;
+        let formats = manual_builder.stream.formats();
 
-        rt.spawn(wrap_panic_on_err(future));
-
-        let formats = link_stream.formats();
-
-        Ok(PipelineBuilder {
-            stream: link_stream,
+        Ok(Builder {
             formats,
-            data_phantom: std::marker::PhantomData,
-            format_phantom: std::marker::PhantomData,
+            manual_builder,
         })
     }
 }

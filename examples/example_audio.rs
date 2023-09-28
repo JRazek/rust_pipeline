@@ -323,7 +323,7 @@ impl SinkPad<MediaData, MediaFormat> for ConsumerPad {
 }
 
 fn main() {
-    use pipeline::pipeline_builder::PipelineBuilder;
+    use pipeline::pipeline_builder::negotiator::Builder as PipelineBuilder;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
