@@ -8,15 +8,3 @@ pub trait FormatProvider<F>: Send + Sync {
 pub trait FormatNegotiator<F>: Send + Sync {
     fn matches(&self, format: &F) -> bool;
 }
-
-pub(super) fn negotiate_formats<F>(
-    stream: &impl FormatProvider<F>,
-    sink: &impl FormatNegotiator<F>,
-) -> Vec<F> {
-    let stream_format = stream.formats();
-
-    stream_format
-        .into_iter()
-        .filter(|format| sink.matches(format))
-        .collect()
-}

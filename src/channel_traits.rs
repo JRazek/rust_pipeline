@@ -1,6 +1,6 @@
 pub mod mpsc {
     #[async_trait::async_trait]
-    pub trait Receiver<I>: Send + Sync {
+    pub trait Receiver<I>: Send + Sync + 'static {
         async fn recv(&mut self) -> Option<I>;
     }
 
@@ -16,7 +16,7 @@ pub mod mpsc {
     impl std::error::Error for SendError<()> {}
 
     #[async_trait::async_trait]
-    pub trait Sender<I>: Send + Sync {
+    pub trait Sender<I>: Send + Sync + 'static {
         async fn send(&self, item: I) -> Result<(), SendError<I>>;
     }
 }

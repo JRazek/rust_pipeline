@@ -1,6 +1,7 @@
 use pipeline::audio::pcm::{Layout, Pcm};
 use pipeline::audio::AudioFormat;
-use pipeline::pad_element::{SinkPad, StreamPad};
+use pipeline::errors::LinkError;
+use pipeline::pad_element::{LinkElement, SinkPad, StreamPad};
 use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaData, MediaFormat};
 use pipeline::tags::Tag;
 
@@ -58,79 +59,6 @@ fn frequencies_to_s16_pcm(freq: &Vec<u32>) -> Vec<pads::MediaFormat> {
             ))
         })
         .collect()
-}
-
-struct PassthroughSinkPad {
-    tx: Sender,
-}
-
-impl FormatNegotiator<MediaFormat> for PassthroughSinkPad {
-    fn matches(&self, _: &pads::MediaFormat) -> bool {
-        true
-    }
-}
-
-impl SinkPad<MediaData, MediaFormat> for PassthroughSinkPad {
-    type Sender = Sender;
-
-    fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
-        Ok(self.tx)
-    }
-}
-
-struct PassthroughStreamPad {
-    supported_frequencies: Vec<u32>,
-    rx: Receiver,
-}
-
-impl StreamPad<MediaData, MediaFormat> for PassthroughStreamPad {
-    type Receiver = Receiver;
-
-    fn get_rx(self, _: &pads::MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
-        Ok(self.rx)
-    }
-}
-
-impl FormatProvider<MediaFormat> for PassthroughStreamPad {
-    fn formats(&self) -> Vec<pads::MediaFormat> {
-        frequencies_to_s16_pcm(&self.supported_frequencies)
-    }
-}
-
-fn spawn_passthrough_task(
-    rt: &tokio::runtime::Runtime,
-) -> (PassthroughSinkPad, PassthroughStreamPad) {
-    let (in_tx, in_rx) = tokio_mpsc::channel(1024);
-    let (out_tx, out_rx) = tokio_mpsc::channel(1024);
-
-    rt.spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)));
-
-    (
-        PassthroughSinkPad { tx: Sender(in_tx) },
-        PassthroughStreamPad {
-            supported_frequencies: vec![16000],
-            rx: Receiver(out_rx),
-        },
-    )
-}
-
-async fn passthrough_task(mut rx: Receiver, tx: Sender) {
-    let rx = &mut rx.0;
-    let tx = &tx.0;
-
-    while let Some(data) = rx.recv().await {
-        tx.send(data).await.unwrap();
-    }
-
-    eprintln!("passthrough task finished");
-}
-
-fn signal(time: std::time::Duration) -> i16 {
-    let time = time.as_nanos() as f64;
-
-    let converted = (f64::sin(time * 0.001) * i16::MAX as f64) as i16;
-
-    converted
 }
 
 struct AudioProducerStreamPad {
@@ -202,6 +130,95 @@ fn audio_producer(rt: &tokio::runtime::Runtime) -> AudioProducerStreamPad {
     AudioProducerStreamPad { rx: Receiver(rx) }
 }
 
+struct PassthroughSinkPad {
+    tx: Sender,
+}
+
+impl SinkPad<MediaData, MediaFormat> for PassthroughSinkPad {
+    type Sender = Sender;
+
+    fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
+        Ok(self.tx)
+    }
+}
+
+struct PassthroughStreamPad {
+    supported_formats: Vec<pads::MediaFormat>,
+    rx: Receiver,
+}
+
+impl StreamPad<MediaData, MediaFormat> for PassthroughStreamPad {
+    type Receiver = Receiver;
+
+    fn get_rx(self, _: &pads::MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
+        Ok(self.rx)
+    }
+}
+
+impl FormatProvider<MediaFormat> for PassthroughStreamPad {
+    fn formats(&self) -> Vec<pads::MediaFormat> {
+        self.supported_formats.clone()
+    }
+}
+
+struct PassthroughLink<'a> {
+    rt: &'a tokio::runtime::Runtime,
+}
+
+impl LinkElement<MediaData, MediaFormat> for PassthroughLink<'_> {
+    type SinkPad = PassthroughSinkPad;
+    type StreamPad = PassthroughStreamPad;
+
+    fn get_pads(
+        self,
+        rx_format: &MediaFormat,
+    ) -> Result<(Self::SinkPad, Self::StreamPad), LinkError> {
+        let (sink_pad, stream_pad) = spawn_passthrough_task(self.rt);
+
+        let sink_pad = PassthroughSinkPad { tx: sink_pad };
+        let stream_pad = PassthroughStreamPad {
+            supported_formats: vec![rx_format.clone()],
+            rx: stream_pad,
+        };
+
+        Ok((sink_pad, stream_pad))
+    }
+}
+
+impl FormatNegotiator<MediaFormat> for PassthroughLink<'_> {
+    fn matches(&self, _: &pads::MediaFormat) -> bool {
+        true
+    }
+}
+
+fn spawn_passthrough_task(rt: &tokio::runtime::Runtime) -> (Sender, Receiver) {
+    let (in_tx, in_rx) = tokio_mpsc::channel(1024);
+    let (out_tx, out_rx) = tokio_mpsc::channel(1024);
+
+    rt.spawn(passthrough_task(Receiver(in_rx), Sender(out_tx)));
+
+    (Sender(in_tx), Receiver(out_rx))
+}
+
+async fn passthrough_task(mut rx: Receiver, tx: Sender) {
+    let rx = &mut rx.0;
+    let tx = &tx.0;
+
+    while let Some(data) = rx.recv().await {
+        tx.send(data).await.unwrap();
+    }
+
+    eprintln!("passthrough task finished");
+}
+
+fn signal(time: std::time::Duration) -> i16 {
+    let time = time.as_nanos() as f64;
+
+    let converted = (f64::sin(time * 0.001) * i16::MAX as f64) as i16;
+
+    converted
+}
+
 struct ConsumerPad {
     tx: Sender,
 }
@@ -262,14 +279,14 @@ fn main() {
 
     let producer_stream_pad = audio_producer(&rt);
 
-    let passthrough_link = spawn_passthrough_task(&rt);
+    let passthrough_link = PassthroughLink { rt: &rt };
 
     let consumer_pad = consumer_task(&rt);
 
     StreamPadBuilder::with_stream(producer_stream_pad)
-        .set_link(&rt, passthrough_link)
+        .set_link(passthrough_link, &rt)
         .unwrap()
-        .build_with_sink(&rt, consumer_pad)
+        .build_with_sink(consumer_pad, &rt)
         .unwrap();
 
     rt.block_on(async {

@@ -2,92 +2,107 @@ use crate::errors::LinkError;
 use crate::pads::FormatNegotiator;
 
 use super::channel_traits::mpsc::{Receiver, Sender};
-use super::pads::{negotiate_formats, FormatProvider};
+use super::pads::FormatProvider;
 
-fn link<D: Send, F: Send>(
+fn link<D: Send + 'static, F: Send + 'static>(
     stream_pad: impl StreamPad<D, F>,
     sink_pad: impl SinkPad<D, F>,
-) -> Result<impl futures::Future<Output = Result<(), LinkError>>, LinkError> {
-    let negotiated = negotiate_formats(&stream_pad, &sink_pad);
+    format: &F,
+) -> Result<impl futures::Future<Output = Result<(), LinkError>> + 'static, LinkError> {
+    let mut stream_rx = stream_pad.get_rx(&format)?; //stream_rx is 'static
+    let sink_pad = sink_pad.get_tx(&format)?; //sink_pad is 'static
 
-    let format = match &negotiated[..] {
-        [format, ..] => Some(format),
-        _ => None,
-    };
-
-    match format {
-        Some(format) => {
-            let mut stream_pad = stream_pad.get_rx(&format)?;
-            let sink_pad = sink_pad.get_tx(&format)?;
-
-            let task = async move {
-                while let Some(data) = stream_pad.recv().await {
-                    sink_pad
-                        .send(data)
-                        .await
-                        .map_err(|_| LinkError::ChannelClosed)?;
-                }
-
-                Ok::<(), LinkError>(())
-            };
-
-            Ok(task)
+    let task = async move {
+        while let Some(data) = stream_rx.recv().await {
+            sink_pad
+                .send(data)
+                .await
+                .map_err(|_| LinkError::ChannelClosed)?;
         }
 
-        None => Err(LinkError::InitialFormatMismatch),
-    }
+        Ok::<(), LinkError>(())
+    };
+
+    Ok(task)
 }
 
-pub trait StreamPad<D, F>: Sized + FormatProvider<F> {
+pub trait StreamPad<D, F>: Sized {
     type Receiver: Receiver<D>;
 
-    fn get_rx(self, format: &F) -> Result<Self::Receiver, LinkError>;
+    fn get_rx(self, rx_format: &F) -> Result<Self::Receiver, LinkError>;
 }
 
-pub trait SinkPad<D, F>: Sized + FormatNegotiator<F> {
+pub trait SinkPad<D, F>: Sized {
     type Sender: Sender<D>;
 
-    fn get_tx(self, format: &F) -> Result<Self::Sender, LinkError>;
+    fn get_tx(self, tx_format: &F) -> Result<Self::Sender, LinkError>;
 }
 
-async fn wrap_panic_on_err<T>(result: impl futures::Future<Output = Result<T, LinkError>>) {
-    if let Err(err) = result.await {
-        panic!("Link error: {:?}", err);
+pub trait LinkElement<Drx, Frx, Dtx = Drx, Ftx = Frx> {
+    type SinkPad: SinkPad<Drx, Frx>;
+    type StreamPad: StreamPad<Dtx, Ftx> + FormatProvider<Ftx>;
+
+    fn get_pads(self, rx_format: &Frx) -> Result<(Self::SinkPad, Self::StreamPad), LinkError>;
+}
+
+fn wrap_panic_on_err<T>(
+    result: impl futures::Future<Output = Result<T, LinkError>>,
+) -> impl futures::Future<Output = ()> {
+    async move {
+        if let Err(err) = result.await {
+            panic!("Link error: {:?}", err);
+        }
     }
 }
 
 pub mod builder {
     use super::*;
 
-    pub struct StreamPadBuilder<S: StreamPad<D, F> + 'static, D, F> {
-        stream: S,
-        data_phantom: std::marker::PhantomData<D>,
-        format_phantom: std::marker::PhantomData<F>,
+    pub struct StreamPadBuilder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
+        stream: Stream,
+        formats: Vec<Ftx>,
+        data_phantom: std::marker::PhantomData<Dtx>,
+        format_phantom: std::marker::PhantomData<Ftx>,
     }
 
-    impl<'a, S: StreamPad<D, F> + 'static, D: Send + 'static, F: Send + 'static>
-        StreamPadBuilder<S, D, F>
+    impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send + 'static>
+        StreamPadBuilder<Stream, D, F>
     {
-        pub fn with_stream(sink: S) -> Self {
+        pub fn with_stream(sink: Stream) -> Self {
+            let formats = sink.formats();
             Self {
                 stream: sink,
+                formats,
                 data_phantom: std::marker::PhantomData,
                 format_phantom: std::marker::PhantomData,
             }
         }
 
-        pub fn build_with_sink<T: SinkPad<D, F> + 'static>(
+        pub fn build_with_sink<T: SinkPad<D, F> + FormatNegotiator<F>>(
             self,
-            rt: &tokio::runtime::Runtime,
             sink: T,
+            rt: &tokio::runtime::Runtime,
         ) -> Result<(), LinkError> {
-            let future = link(self.stream, sink)?;
+            let format = self
+                .formats
+                .iter()
+                .find(|&format| sink.matches(format))
+                .ok_or(LinkError::InitialFormatMismatch)?;
+
+            let future = link(self.stream, sink, format)?;
 
             rt.spawn(wrap_panic_on_err(future));
 
             Ok(())
         }
+    }
 
+    /*
+     * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
+     */
+    impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'static>
+        StreamPadBuilder<S, Drx, Frx>
+    {
         /*
          * Note that (Sink, Stream) order is reversed here.
          * Link element acts as a bridge between the two pads.
@@ -96,19 +111,32 @@ pub mod builder {
          *      ^^^^^^Link^^^^^^^^
          *
          */
-        pub fn set_link<Sink: SinkPad<D, F> + 'static, Stream: StreamPad<D, F> + 'static>(
+        pub fn set_link<
+            LinkT: LinkElement<Drx, Frx, Dtx, Ftx> + FormatNegotiator<Frx>,
+            Dtx: Send + 'static,
+            Ftx: Send + 'static,
+        >(
             self,
+            link_element: LinkT,
             rt: &tokio::runtime::Runtime,
-            link_tup: (Sink, Stream),
-        ) -> Result<StreamPadBuilder<Stream, D, F>, LinkError> {
-            let (sink, stream) = link_tup;
+        ) -> Result<StreamPadBuilder<LinkT::StreamPad, Dtx, Ftx>, LinkError> {
+            let format = self
+                .formats
+                .iter()
+                .find(|&format| link_element.matches(format))
+                .ok_or(LinkError::InitialFormatMismatch)?;
 
-            let future = link(self.stream, sink)?;
+            let (link_sink, link_stream) = link_element.get_pads(format)?;
+
+            let future = link(self.stream, link_sink, format)?;
 
             rt.spawn(wrap_panic_on_err(future));
 
+            let formats = link_stream.formats();
+
             Ok(StreamPadBuilder {
-                stream,
+                stream: link_stream,
+                formats,
                 data_phantom: std::marker::PhantomData,
                 format_phantom: std::marker::PhantomData,
             })
