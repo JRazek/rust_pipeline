@@ -3,18 +3,23 @@ use crate::pad::*;
 
 use super::manual::Builder as ManualBuilder;
 
-pub struct Builder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
-    manual_builder: ManualBuilder<Stream, Dtx, Ftx>,
-    formats: Vec<Ftx>,
+pub struct Builder<S, D, F>
+where
+    S: StreamPad<D, F>,
+{
+    manual_builder: ManualBuilder<S, D, F>,
+    formats: Vec<F>,
 }
 
-impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send + 'static>
-    Builder<Stream, D, F>
+impl<Stream, Dtx, Ftx> Builder<Stream, Dtx, Ftx>
+where
+    Stream: StreamPad<Dtx, Ftx> + FormatProvider<Ftx>,
+    Dtx: Send + 'static,
+    Ftx: Send + 'static,
 {
-    pub fn with_stream(sink: Stream) -> Self {
-        let formats = sink.formats();
-
-        let manual_builder = ManualBuilder::with_stream(sink);
+    pub fn with_stream(stream: Stream) -> Self {
+        let formats = stream.formats();
+        let manual_builder = ManualBuilder::with_stream(stream);
 
         Self {
             formats,
@@ -22,11 +27,10 @@ impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send
         }
     }
 
-    pub fn build_with_sink<T: SinkPad<D, F> + FormatNegotiator<F>>(
-        self,
-        sink: T,
-        rt: &tokio::runtime::Runtime,
-    ) -> Result<(), LinkError> {
+    pub fn build_with_sink<T>(self, sink: T, rt: &tokio::runtime::Runtime) -> Result<(), LinkError>
+    where
+        T: SinkPad<Dtx, Ftx> + FormatNegotiator<Ftx>,
+    {
         let format = self
             .formats
             .iter()
@@ -37,31 +41,22 @@ impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send
     }
 }
 
-/*
- * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
- */
-impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'static>
-    Builder<S, Drx, Frx>
+impl<Stream, Drx, Frx> Builder<Stream, Drx, Frx>
+where
+    Stream: StreamPad<Drx, Frx> + 'static,
+    Drx: Send + 'static,
+    Frx: Send + 'static,
 {
-    /*
-     * Note that (Sink, Stream) order is reversed here.
-     * Link element acts as a bridge between the two pads.
-     *
-     * ---> [Sink ---> Stream] --->
-     *      ^^^^^^Link^^^^^^^^
-     *
-     */
-    pub fn set_link<
-        LinkT: LinkElement<Drx, Frx, Dtx, Ftx> + FormatNegotiator<Frx>,
-        Dtx: Send + 'static,
-        Ftx: Send + 'static,
-    >(
+    pub fn set_link<LinkT, Dtx, Ftx>(
         self,
         link_element: LinkT,
         rt: &tokio::runtime::Runtime,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
+        LinkT: LinkElement<Drx, Frx, Dtx, Ftx> + FormatNegotiator<Frx>,
         LinkT::StreamPad: FormatProvider<Ftx>,
+        Dtx: Send + 'static,
+        Ftx: Send + 'static,
     {
         let format = self
             .formats
@@ -79,3 +74,4 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
         })
     }
 }
+

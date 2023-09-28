@@ -3,14 +3,20 @@ use crate::pad::*;
 
 use super::*;
 
-pub struct Builder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
+pub struct Builder<Stream, Dtx, Ftx>
+where
+    Stream: StreamPad<Dtx, Ftx>,
+{
     pub(super) stream: Stream,
     data_phantom: std::marker::PhantomData<Dtx>,
     format_phantom: std::marker::PhantomData<Ftx>,
 }
 
-impl<'a, Stream: StreamPad<D, F>, D: Send + 'static, F: Send + 'static>
-    Builder<Stream, D, F>
+impl<'a, Stream, Data, Format> Builder<Stream, Data, Format>
+where
+    Stream: StreamPad<Data, Format>,
+    Data: Send + 'static,
+    Format: Send + 'static,
 {
     pub fn with_stream(sink: Stream) -> Self {
         Self {
@@ -20,10 +26,10 @@ impl<'a, Stream: StreamPad<D, F>, D: Send + 'static, F: Send + 'static>
         }
     }
 
-    pub fn build_with_sink<T: SinkPad<D, F>>(
+    pub fn build_with_sink<T: SinkPad<Data, Format>>(
         self,
         sink: T,
-        format: &F,
+        format: &Format,
         rt: &tokio::runtime::Runtime,
     ) -> Result<(), LinkError> {
         let future = link(self.stream, sink, format)?;
@@ -37,8 +43,11 @@ impl<'a, Stream: StreamPad<D, F>, D: Send + 'static, F: Send + 'static>
 /*
  * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
  */
-impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'static>
-    Builder<S, Drx, Frx>
+impl<'a, S, Drx, Frx> Builder<S, Drx, Frx>
+where
+    S: StreamPad<Drx, Frx> + 'static,
+    Drx: Send + 'static,
+    Frx: Send + 'static,
 {
     /*
      * Note that (Sink, Stream) order is reversed here.
@@ -48,17 +57,16 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
      *      ^^^^^^Link^^^^^^^^
      *
      */
-    pub fn set_link<
-        LinkT: LinkElement<Drx, Frx, Dtx, Ftx>,
-        Dtx: Send + 'static,
-        Ftx: Send + 'static,
-    >(
+    pub fn set_link<LinkT, Dtx, Ftx>(
         self,
         link_element: LinkT,
         format: &Frx,
         rt: &tokio::runtime::Runtime,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
+        LinkT: LinkElement<Drx, Frx, Dtx, Ftx>,
+        Dtx: Send + 'static,
+        Ftx: Send + 'static,
         LinkT::StreamPad: FormatProvider<Ftx>,
     {
         let (link_sink, link_stream) = link_element.get_pads(format)?;
@@ -74,3 +82,7 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
         })
     }
 }
+
+//fn test<I, E, F: futures::Future<Output = Result<I, E>>>(
+//) -> impl FnOnce(F) -> () + Send + 'static {
+//}
