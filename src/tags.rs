@@ -54,6 +54,18 @@ impl<T: Clone + Default, D> Tag<T, D, Full> {
     }
 }
 
+impl<T: Clone + Default, D> Tag<T, D, Full> {
+    pub fn format() -> Tag<T, D, Empty> {
+        Tag::default()
+    }
+}
+
+impl<T: Clone + Default, D> Tag<T, D, Empty> {
+    pub fn with_data(data: D) -> Tag<T, D, Full> {
+        Tag::new(data)
+    }
+}
+
 impl<T: Clone + Default, D> Deref for Tag<T, D, Full> {
     type Target = D;
 
