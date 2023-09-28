@@ -11,7 +11,7 @@ fn wrap_panic_on_err<T>(
     }
 }
 
-pub struct StreamPadBuilder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
+pub struct PipelineBuilder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
     stream: Stream,
     formats: Vec<Ftx>,
     data_phantom: std::marker::PhantomData<Dtx>,
@@ -19,7 +19,7 @@ pub struct StreamPadBuilder<Stream: StreamPad<Dtx, Ftx>, Dtx, Ftx> {
 }
 
 impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send + 'static>
-    StreamPadBuilder<Stream, D, F>
+    PipelineBuilder<Stream, D, F>
 {
     pub fn with_stream(sink: Stream) -> Self {
         let formats = sink.formats();
@@ -54,7 +54,7 @@ impl<'a, Stream: StreamPad<D, F> + FormatProvider<F>, D: Send + 'static, F: Send
  * Drx, Frx in context of link (Drx, Frx) ---> [(Drx, Frx) ---> (Dtx, Ftx)] ---> (Dtx, Ftx)
  */
 impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'static>
-    StreamPadBuilder<S, Drx, Frx>
+    PipelineBuilder<S, Drx, Frx>
 {
     /*
      * Note that (Sink, Stream) order is reversed here.
@@ -72,7 +72,7 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
         self,
         link_element: LinkT,
         rt: &tokio::runtime::Runtime,
-    ) -> Result<StreamPadBuilder<LinkT::StreamPad, Dtx, Ftx>, LinkError> {
+    ) -> Result<PipelineBuilder<LinkT::StreamPad, Dtx, Ftx>, LinkError> {
         let format = self
             .formats
             .iter()
@@ -87,7 +87,7 @@ impl<'a, S: StreamPad<Drx, Frx> + 'static, Drx: Send + 'static, Frx: Send + 'sta
 
         let formats = link_stream.formats();
 
-        Ok(StreamPadBuilder {
+        Ok(PipelineBuilder {
             stream: link_stream,
             formats,
             data_phantom: std::marker::PhantomData,

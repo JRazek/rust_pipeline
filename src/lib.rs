@@ -1,7 +1,5 @@
-pub mod audio;
 pub mod channel_traits;
 pub mod errors;
-pub mod formats;
+pub mod pad;
+pub mod pipeline_builder;
 pub mod tags;
-
-pub mod pads;

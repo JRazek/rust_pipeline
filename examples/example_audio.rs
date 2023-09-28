@@ -1,15 +1,76 @@
-use pipeline::audio::pcm::{Layout, Pcm};
-use pipeline::audio::AudioFormat;
 use pipeline::errors::LinkError;
-use pipeline::pads::{LinkElement, SinkPad, StreamPad};
-use pipeline::pads::{self, FormatNegotiator, FormatProvider, MediaData, MediaFormat};
-use pipeline::tags::Tag;
+use pipeline::pad::{FormatNegotiator, FormatProvider, LinkElement, SinkPad, StreamPad};
 
 use tokio::sync::mpsc as tokio_mpsc;
 
 use pipeline::channel_traits::mpsc as pipeline_mpsc;
 
-pub struct Sender(pub tokio_mpsc::Sender<pads::MediaData>);
+use pipeline::tags::{Empty, Full, Tag};
+
+#[derive(Debug)]
+pub enum MediaFormat<S = Empty> {
+    Audio(AudioFormat<S>),
+}
+
+pub type MediaData = MediaFormat<Full>;
+
+impl Clone for MediaFormat<Empty> {
+    fn clone(&self) -> Self {
+        match self {
+            MediaFormat::Audio(audio) => MediaFormat::Audio(audio.clone()),
+        }
+    }
+}
+
+pub mod pcm {
+    use super::*;
+
+    #[derive(Debug, Default, Clone)]
+    pub struct S16LE;
+
+    #[derive(Debug)]
+    pub enum Layout<S> {
+        S16LE(Tag<S16LE, Box<[i16]>, S>),
+    }
+
+    impl Clone for Layout<Empty> {
+        fn clone(&self) -> Self {
+            match self {
+                Layout::S16LE(tag) => Layout::S16LE(tag.clone()),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Pcm<T> {
+        pub layout: Layout<T>,
+        pub sample_rate: u32,
+    }
+
+    impl Clone for Pcm<Empty> {
+        fn clone(&self) -> Self {
+            Self {
+                layout: self.layout.clone(),
+                sample_rate: self.sample_rate,
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AudioFormat<T> {
+    PCM(pcm::Pcm<T>),
+}
+
+impl Clone for AudioFormat<Empty> {
+    fn clone(&self) -> Self {
+        match self {
+            AudioFormat::PCM(pcm) => AudioFormat::PCM(pcm.clone()),
+        }
+    }
+}
+
+pub struct Sender(pub tokio_mpsc::Sender<MediaData>);
 
 impl Drop for Sender {
     fn drop(&mut self) {
@@ -17,7 +78,7 @@ impl Drop for Sender {
     }
 }
 
-pub struct Receiver(pub tokio_mpsc::Receiver<pads::MediaData>);
+pub struct Receiver(pub tokio_mpsc::Receiver<MediaData>);
 
 impl Drop for Receiver {
     fn drop(&mut self) {
@@ -26,11 +87,8 @@ impl Drop for Receiver {
 }
 
 #[async_trait::async_trait]
-impl pipeline_mpsc::Sender<pads::MediaData> for Sender {
-    async fn send(
-        &self,
-        data: pads::MediaData,
-    ) -> Result<(), pipeline_mpsc::SendError<pads::MediaData>> {
+impl pipeline_mpsc::Sender<MediaData> for Sender {
+    async fn send(&self, data: MediaData) -> Result<(), pipeline_mpsc::SendError<MediaData>> {
         let tx = &self.0;
 
         tx.send(data)
@@ -40,23 +98,21 @@ impl pipeline_mpsc::Sender<pads::MediaData> for Sender {
 }
 
 #[async_trait::async_trait]
-impl pipeline_mpsc::Receiver<pads::MediaData> for Receiver {
-    async fn recv(&mut self) -> Option<pads::MediaData> {
+impl pipeline_mpsc::Receiver<MediaData> for Receiver {
+    async fn recv(&mut self) -> Option<MediaData> {
         let rx = &mut self.0;
 
         rx.recv().await
     }
 }
 
-fn frequencies_to_s16_pcm(freq: &Vec<u32>) -> Vec<pads::MediaFormat> {
+fn frequencies_to_s16_pcm(freq: &Vec<u32>) -> Vec<MediaFormat> {
     freq.iter()
         .map(|&sample_rate| {
-            pads::MediaFormat::Audio(pipeline::audio::AudioFormat::PCM(
-                pipeline::audio::pcm::Pcm {
-                    layout: pipeline::audio::pcm::Layout::S16LE(Tag::default()),
-                    sample_rate,
-                },
-            ))
+            MediaFormat::Audio(AudioFormat::PCM(pcm::Pcm {
+                layout: pcm::Layout::S16LE(Tag::default()),
+                sample_rate,
+            }))
         })
         .collect()
 }
@@ -66,7 +122,7 @@ struct AudioProducerStreamPad {
 }
 
 impl FormatProvider<MediaFormat> for AudioProducerStreamPad {
-    fn formats(&self) -> Vec<pads::MediaFormat> {
+    fn formats(&self) -> Vec<MediaFormat> {
         frequencies_to_s16_pcm(&vec![16000])
     }
 }
@@ -74,13 +130,10 @@ impl FormatProvider<MediaFormat> for AudioProducerStreamPad {
 impl StreamPad<MediaData, MediaFormat> for AudioProducerStreamPad {
     type Receiver = Receiver;
 
-    fn get_rx(
-        self,
-        format: &pads::MediaFormat,
-    ) -> Result<Self::Receiver, pipeline::errors::LinkError> {
+    fn get_rx(self, format: &MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
         match &format {
-            pads::MediaFormat::Audio(AudioFormat::PCM(Pcm {
-                layout: Layout::S16LE(_),
+            MediaFormat::Audio(AudioFormat::PCM(pcm::Pcm {
+                layout: pcm::Layout::S16LE(_),
                 sample_rate: 16000,
             })) => {
                 let rx = self.rx;
@@ -114,8 +167,8 @@ fn audio_producer(rt: &tokio::runtime::Runtime) -> AudioProducerStreamPad {
 
             let data = buffer.into_boxed_slice();
 
-            let buffer = pads::MediaData::Audio(AudioFormat::PCM(Pcm {
-                layout: Layout::S16LE(Tag::new(data)),
+            let buffer = MediaData::Audio(AudioFormat::PCM(pcm::Pcm {
+                layout: pcm::Layout::S16LE(Tag::new(data)),
                 sample_rate: SAMPLE_RATE,
             }));
 
@@ -137,26 +190,26 @@ struct PassthroughSinkPad {
 impl SinkPad<MediaData, MediaFormat> for PassthroughSinkPad {
     type Sender = Sender;
 
-    fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
+    fn get_tx(self, _: &MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
         Ok(self.tx)
     }
 }
 
 struct PassthroughStreamPad {
-    supported_formats: Vec<pads::MediaFormat>,
+    supported_formats: Vec<MediaFormat>,
     rx: Receiver,
 }
 
 impl StreamPad<MediaData, MediaFormat> for PassthroughStreamPad {
     type Receiver = Receiver;
 
-    fn get_rx(self, _: &pads::MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
+    fn get_rx(self, _: &MediaFormat) -> Result<Self::Receiver, pipeline::errors::LinkError> {
         Ok(self.rx)
     }
 }
 
 impl FormatProvider<MediaFormat> for PassthroughStreamPad {
-    fn formats(&self) -> Vec<pads::MediaFormat> {
+    fn formats(&self) -> Vec<MediaFormat> {
         self.supported_formats.clone()
     }
 }
@@ -186,7 +239,7 @@ impl LinkElement<MediaData, MediaFormat> for PassthroughLink<'_> {
 }
 
 impl FormatNegotiator<MediaFormat> for PassthroughLink<'_> {
-    fn matches(&self, _: &pads::MediaFormat) -> bool {
+    fn matches(&self, _: &MediaFormat) -> bool {
         true
     }
 }
@@ -229,8 +282,8 @@ fn consumer_task(rt: &tokio::runtime::Runtime) -> ConsumerPad {
     let task = async move {
         while let Some(data) = rx.recv().await {
             match &data {
-                pads::MediaData::Audio(AudioFormat::PCM(Pcm {
-                    layout: Layout::S16LE(data),
+                MediaData::Audio(AudioFormat::PCM(pcm::Pcm {
+                    layout: pcm::Layout::S16LE(data),
                     sample_rate: 16000,
                 })) => {
                     println!("Got audio data: {:?}", data);
@@ -250,10 +303,10 @@ fn consumer_task(rt: &tokio::runtime::Runtime) -> ConsumerPad {
 }
 
 impl FormatNegotiator<MediaFormat> for ConsumerPad {
-    fn matches(&self, format: &pads::MediaFormat) -> bool {
+    fn matches(&self, format: &MediaFormat) -> bool {
         match format {
-            pads::MediaFormat::Audio(AudioFormat::PCM(Pcm {
-                layout: Layout::S16LE(_),
+            MediaFormat::Audio(AudioFormat::PCM(pcm::Pcm {
+                layout: pcm::Layout::S16LE(_),
                 sample_rate: 16000,
             })) => true,
             _ => false,
@@ -264,13 +317,13 @@ impl FormatNegotiator<MediaFormat> for ConsumerPad {
 impl SinkPad<MediaData, MediaFormat> for ConsumerPad {
     type Sender = Sender;
 
-    fn get_tx(self, _: &pads::MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
+    fn get_tx(self, _: &MediaFormat) -> Result<Self::Sender, pipeline::errors::LinkError> {
         Ok(self.tx)
     }
 }
 
 fn main() {
-    use pipeline::pad_element::builder::StreamPadBuilder;
+    use pipeline::pipeline_builder::PipelineBuilder;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -283,7 +336,7 @@ fn main() {
 
     let consumer_pad = consumer_task(&rt);
 
-    StreamPadBuilder::with_stream(producer_stream_pad)
+    PipelineBuilder::with_stream(producer_stream_pad)
         .set_link(passthrough_link, &rt)
         .unwrap()
         .build_with_sink(consumer_pad, &rt)

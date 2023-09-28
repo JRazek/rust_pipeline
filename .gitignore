@@ -5,6 +5,7 @@
 !.github/
 !src/
 !docs/
+!examples/
 
 # Don't ignore specific files
 !.gitignore
@@ -16,3 +17,4 @@
 !.github/**
 !src/**
 !docs/**
+!examples/**
