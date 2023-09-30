@@ -1,22 +1,7 @@
 use crate::errors::LinkError;
 use crate::pad::*;
 
-use std::pin::Pin;
-
-type PinnedFutureBox = Pin<Box<dyn futures::Future<Output = Result<(), LinkError>> + Send>>;
-
-pub trait CallbackWithFuture {
-    fn call(&self, future: PinnedFutureBox);
-}
-
-impl<Function> CallbackWithFuture for Function
-where
-    Function: Fn(PinnedFutureBox) + Send,
-{
-    fn call(&self, future: PinnedFutureBox) {
-        self(future)
-    }
-}
+use crate::future_utils::CallbackWithFuture;
 
 pub struct Builder<Stream, Dtx, Ftx>
 where
@@ -45,7 +30,7 @@ where
         self,
         sink: T,
         format: &Format,
-        f: &impl CallbackWithFuture,
+        f: impl CallbackWithFuture<Result<(), LinkError>>,
     ) -> Result<(), LinkError> {
         let future = link(self.stream, sink, format)?;
 
@@ -76,13 +61,12 @@ where
         self,
         link_element: LinkT,
         format: &Frx,
-        f: &impl CallbackWithFuture,
+        f: impl CallbackWithFuture<Result<(), LinkError>>,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
         LinkT: LinkElement<Drx, Frx, Dtx, Ftx>,
         Dtx: Send + 'static,
         Ftx: Send + 'static,
-        LinkT::StreamPad: FormatProvider<Ftx>,
     {
         let (link_sink, link_stream) = link_element.get_pads(format)?;
 

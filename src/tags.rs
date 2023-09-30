@@ -61,8 +61,11 @@ impl<T: Clone + Default, D> Tag<T, D, Full> {
 }
 
 impl<T: Clone + Default, D> Tag<T, D, Empty> {
-    pub fn with_data(data: D) -> Tag<T, D, Full> {
+    pub fn with_data(self, data: D) -> Tag<T, D, Full> {
         Tag::new(data)
+    }
+    pub fn empty() -> Tag<T, D, Empty> {
+        Tag::default()
     }
 }
 
@@ -77,5 +80,11 @@ impl<T: Clone + Default, D> Deref for Tag<T, D, Full> {
 impl<T: Clone + Default, D> DerefMut for Tag<T, D, Full> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.data.as_mut().unwrap()
+    }
+}
+
+impl<T: Clone + Default, D> Tag<T, D, Full> {
+    pub fn take(self) -> D {
+        self.data.unwrap()
     }
 }

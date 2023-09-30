@@ -3,7 +3,7 @@ use crate::pad::*;
 
 use super::manual::Builder as ManualBuilder;
 
-use super::manual::CallbackWithFuture;
+use crate::future_utils::CallbackWithFuture;
 
 pub struct Builder<S, D, F>
 where
@@ -29,7 +29,11 @@ where
         }
     }
 
-    pub fn build_with_sink<T>(self, sink: T, f: &impl CallbackWithFuture) -> Result<(), LinkError>
+    pub fn build_with_sink<T>(
+        self,
+        sink: T,
+        f: impl CallbackWithFuture<Result<(), LinkError>>,
+    ) -> Result<(), LinkError>
     where
         T: SinkPad<Dtx, Ftx> + FormatNegotiator<Ftx>,
     {
@@ -52,7 +56,7 @@ where
     pub fn set_link<LinkT, Dtx, Ftx>(
         self,
         link_element: LinkT,
-        f: &impl CallbackWithFuture,
+        f: impl CallbackWithFuture<Result<(), LinkError>>,
     ) -> Result<Builder<LinkT::StreamPad, Dtx, Ftx>, LinkError>
     where
         LinkT: LinkElement<Drx, Frx, Dtx, Ftx> + FormatNegotiator<Frx>,
@@ -76,4 +80,3 @@ where
         })
     }
 }
-
